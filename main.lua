@@ -4,7 +4,9 @@ RemoteLibrary plugin allows browsing and reading files from a remote library ser
 @module koplugin.RemoteLibrary
 --]]--
 
+local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
+local InfoMessage = require("ui/widget/infomessage")
 local _ = require("gettext")
 
 local RemoteLibrary = WidgetContainer:extend{
@@ -13,7 +15,26 @@ local RemoteLibrary = WidgetContainer:extend{
 }
 
 function RemoteLibrary:init()
-    -- Plugin registration and initialization stub
+    self.ui.menu:registerToMainMenu(self)
+end
+
+function RemoteLibrary:addToMainMenu(menu_items)
+    menu_items.remote_library = {
+        text = _("Remote Library"),
+        sorting_hint = "more_tools",
+        sub_item_table = {
+            {
+                text = _("Settings"),
+                keep_menu_open = true,
+                callback = function()
+                    UIManager:show(InfoMessage:new{
+                        text = _("Remote Library settings"),
+                        timeout = 2,
+                    })
+                end,
+            }
+        }
+    }
 end
 
 return RemoteLibrary
