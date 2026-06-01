@@ -206,4 +206,328 @@ describe("RemoteLibrary plugin", function()
         assert.equals(1, #sub_items)
         assert.match("Cloudstorage directory: not set", sub_items[1].text)
     end)
+
+    describe("Map Overlay", function()
+        local original_attributes
+        local original_path
+
+        setup(function()
+            original_path = package.path
+            package.path = package.path .. ";plugins/coverbrowser.koplugin/?.lua"
+            local DataStorage = require("datastorage")
+            local lfs = require("libs/libkoreader-lfs")
+            original_attributes = lfs.attributes
+
+            _G.G_reader_settings = {
+                readSetting = function(self, key, default)
+                    if key == "home_dir" then
+                        return "/books"
+                    end
+                    return default
+                end,
+                nilOrTrue = function(self, key)
+                    return true
+                end,
+                isTrue = function(self, key)
+                    return false
+                end,
+                isFalse = function(self, key)
+                    return false
+                end
+            }
+            _G.Device = {
+                home_dir = "/books"
+            }
+
+            local map_file_path = DataStorage:getSettingsDir() .. "/remotelibrary_map.lua"
+            local f = io.open(map_file_path, "w")
+            if f then
+                f:write([[
+return {
+    files = {
+        { name = "remote_book.epub", url = "/remote_book.epub", filesize = 1024 }
+    },
+    folders = {
+        ["remote_folder/"] = {
+            files = {
+                { name = "nested_book.epub", url = "/remote_folder/nested_book.epub", filesize = 512 }
+            },
+            folders = {
+                ["nested_folder/"] = {
+                    files = {},
+                    folders = {}
+                }
+            }
+        }
+    }
+}
+]])
+                f:close()
+            end
+        end)
+
+        teardown(function()
+            local DataStorage = require("datastorage")
+            local lfs = require("libs/libkoreader-lfs")
+            lfs.attributes = original_attributes
+            package.path = original_path
+            _G.G_reader_settings = nil
+            _G.Device = nil
+
+            local map_file_path = DataStorage:getSettingsDir() .. "/remotelibrary_map.lua"
+            os.remove(map_file_path)
+        end)
+
+        it("hooks setupLayout and applies overlay for home directory", function()
+            local lfs = require("libs/libkoreader-lfs")
+
+            lfs.attributes = function(path, key)
+                if path:match("remote_book.epub") or path:match("remote_folder") then
+                    return nil
+                end
+                if path:match("/books$") or path:match("/books/remote_folder$") or path:match("collection") then
+                    if key then
+                        if key == "mode" then return "directory" end
+                        if key == "modification" then return 1 end
+                        return nil
+                    end
+                    return { mode = "directory", modification = 1 }
+                end
+                return original_attributes(path, key)
+            end
+
+            package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+            local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+            local mock_ui = {
+                menu = { registerToMainMenu = function() end }
+            }
+            local plugin_instance = setmetatable({
+                ui = mock_ui,
+                settings = {
+                    readSetting = function() return nil end
+                },
+                loadSettings = function() end
+            }, { __index = RemoteLibrary })
+
+            plugin_instance:init()
+
+            local FileManager = require("apps/filemanager/filemanager")
+            local mock_fc = {
+                path = "/books",
+                getList = function(self, path, collate)
+                    return {}, {}
+                end,
+                getMenuItemMandatory = function() return "1 KB" end,
+                changeToPath = function() end,
+                onFileSelect = function() end,
+                showFileDialog = function() end,
+                ui = {},
+            }
+            local mock_fm = {
+                remotelibrary = plugin_instance,
+                file_chooser = mock_fc,
+                folder_shortcuts = {
+                    hasFolderShortcut = function() return false end
+                },
+                registerKeyEvents = function() end,
+            }
+
+            FileManager.setupLayout(mock_fm)
+
+            local dirs, files = mock_fm.file_chooser:getList("/books", { item_func = function() end })
+
+            assert.equals(1, #dirs)
+            assert.equals("[Cloud] remote_folder/", dirs[1].text)
+            assert.is_true(dirs[1].is_proxy)
+
+            assert.equals(1, #files)
+            assert.equals("[Cloud] remote_book.epub", files[1].text)
+            assert.is_true(files[1].is_proxy)
+
+            -- Test nested subdirectory mapping
+            local nested_dirs, nested_files = mock_fm.file_chooser:getList("/books/remote_folder", { item_func = function() end })
+            assert.equals(1, #nested_dirs)
+            assert.equals("[Cloud] nested_folder/", nested_dirs[1].text)
+            assert.is_true(nested_dirs[1].is_proxy)
+
+            assert.equals(1, #nested_files)
+            assert.equals("[Cloud] nested_book.epub", nested_files[1].text)
+            assert.is_true(nested_files[1].is_proxy)
+
+            local BookInfoManager = require("bookinfomanager")
+            local info = BookInfoManager:getBookInfo("/books/remote_book.epub")
+            assert.is_table(info)
+            assert.equals("Y", info.ignore_cover)
+            assert.is_false(info.ignore_meta)
+            assert.equals("remote_book", info.title)
+            assert.equals("[Cloud]", info.authors)
+            assert.is_true(info._no_provider)
+        end)
+
+        it("automatically hooks FileChooser on instantiation via global init patch", function()
+            package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+            local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+            local mock_ui = {
+                menu = { registerToMainMenu = function() end }
+            }
+            local plugin_instance = setmetatable({
+                ui = mock_ui,
+                settings = {
+                    readSetting = function() return nil end
+                },
+                loadSettings = function() end
+            }, { __index = RemoteLibrary })
+
+            plugin_instance:init()
+
+            local BookList = require("ui/widget/booklist")
+            local original_BookList_init = BookList.init
+            BookList.init = function() end
+
+            local FileChooser = require("ui/widget/filechooser")
+            local mock_fc = setmetatable({
+                path = "/books",
+                ui = {
+                    RemoteLibrary = plugin_instance,
+                },
+                refreshPath = function() end,
+            }, { __index = FileChooser })
+
+            -- Call the patched init
+            FileChooser.init(mock_fc)
+
+            BookList.init = original_BookList_init
+
+            assert.is_true(mock_fc._remotelibrary_patched)
+        end)
+
+        it("does not overlay remote items when browsing outside home_dir", function()
+            package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+            local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+            local mock_fc = {
+                path = "/other_path",
+                getList = function() return {}, {} end,
+                getMenuItemMandatory = function() return "" end,
+                changeToPath = function() end,
+                onFileSelect = function() end,
+                showFileDialog = function() end,
+                ui = {},
+            }
+            local plugin_instance = setmetatable({
+                ui = { menu = { registerToMainMenu = function() end } },
+                settings = { readSetting = function() return nil end },
+                loadSettings = function() end
+            }, { __index = RemoteLibrary })
+
+            plugin_instance:hookFileChooser(mock_fc)
+
+            local dirs, files = mock_fc:getList("/other_path", { item_func = function() end })
+            assert.equals(0, #dirs)
+            assert.equals(0, #files)
+        end)
+
+        it("intercepts onFileSelect and invokes download for proxy file", function()
+            package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+            local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+            local mock_fc = {
+                path = "/books",
+                getList = function() return {}, {} end,
+                getMenuItemMandatory = function() return "" end,
+                changeToPath = function() end,
+                onFileSelect = function() end,
+                showFileDialog = function() end,
+                ui = {},
+            }
+            local download_called = false
+            local plugin_instance = setmetatable({
+                ui = { menu = { registerToMainMenu = function() end } },
+                settings = { readSetting = function() return nil end },
+                loadSettings = function() end,
+                downloadAndOpenFile = function() download_called = true end
+            }, { __index = RemoteLibrary })
+
+            plugin_instance:hookFileChooser(mock_fc)
+
+            local proxy_item = { is_proxy = true, is_file = true, text = "[☁️] book.epub" }
+            mock_fc:onFileSelect(proxy_item)
+
+            assert.is_true(download_called)
+        end)
+
+        it("does not intercept onFileSelect for proxy folders", function()
+            package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+            local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+            local original_onFileSelect_called = false
+            local mock_fc = {
+                path = "/books",
+                getList = function() return {}, {} end,
+                getMenuItemMandatory = function() return "" end,
+                changeToPath = function() end,
+                onFileSelect = function() original_onFileSelect_called = true end,
+                showFileDialog = function() end,
+                ui = {},
+            }
+            local download_called = false
+            local plugin_instance = setmetatable({
+                ui = { menu = { registerToMainMenu = function() end } },
+                settings = { readSetting = function() return nil end },
+                loadSettings = function() end,
+                downloadAndOpenFile = function() download_called = true end
+            }, { __index = RemoteLibrary })
+
+            plugin_instance:hookFileChooser(mock_fc)
+
+            local proxy_folder = { is_proxy = true, is_folder = true, text = "[Cloud] folder/" }
+            mock_fc:onFileSelect(proxy_folder)
+
+            assert.is_false(download_called)
+            assert.is_true(original_onFileSelect_called)
+        end)
+
+        it("intercepts showFileDialog and shows custom download/cancel dialog", function()
+            local UIManager = require("ui/uimanager")
+            local original_show = UIManager.show
+            local dialog_shown = nil
+
+            UIManager.show = function(self, widget)
+                dialog_shown = widget
+            end
+
+            package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+            local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+            local mock_fc = {
+                path = "/books",
+                getList = function() return {}, {} end,
+                getMenuItemMandatory = function() return "" end,
+                changeToPath = function() end,
+                onFileSelect = function() end,
+                showFileDialog = function() end,
+                ui = {},
+            }
+            local plugin_instance = setmetatable({
+                ui = { menu = { registerToMainMenu = function() end } },
+                settings = { readSetting = function() return nil end },
+                loadSettings = function() end
+            }, { __index = RemoteLibrary })
+
+            plugin_instance:hookFileChooser(mock_fc)
+
+            local proxy_item = { is_proxy = true, is_file = true, text = "[☁️] book.epub" }
+            mock_fc:showFileDialog(proxy_item)
+
+            UIManager.show = original_show
+
+            assert.is_not_nil(dialog_shown)
+            assert.is_table(dialog_shown.buttons)
+            assert.equals(1, #dialog_shown.buttons)
+            assert.equals("Download", dialog_shown.buttons[1][1].text)
+            assert.equals("Cancel", dialog_shown.buttons[1][2].text)
+        end)
+    end)
 end)

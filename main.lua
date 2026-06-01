@@ -12,6 +12,12 @@ local ButtonDialog = require("ui/widget/buttondialog")
 local InfoMessage = require("ui/widget/infomessage")
 local ProgressbarDialog = require("ui/widget/progressbardialog")
 local _ = require("gettext")
+local BD = require("ui/bidi")
+local Device = require("device")
+local util = require("util")
+local lfs = require("libs/libkoreader-lfs")
+local filemanagerutil = require("apps/filemanager/filemanagerutil")
+local logger = require("logger")
 
 local RemoteLibrary = WidgetContainer:extend{
     name = "remotelibrary",
@@ -21,8 +27,426 @@ local RemoteLibrary = WidgetContainer:extend{
     updated = nil,
 }
 
+local function getRelativePath(home_dir, current_path)
+    local ffiUtil = require("ffi/util")
+    local home = ffiUtil.realpath(home_dir) or home_dir
+    local curr = ffiUtil.realpath(current_path) or current_path
+    home = home:gsub("/+$", "")
+    curr = curr:gsub("/+$", "")
+    if curr == home then
+        return ""
+    end
+    if curr:sub(1, #home + 1) == home .. "/" then
+        return curr:sub(#home + 2)
+    end
+    return nil
+end
+
+local function getNodeForRelativePath(map, rel_path)
+    if not map then return nil end
+    if rel_path == "" then
+        return map
+    end
+    local node = map
+    for part in rel_path:gmatch("[^/]+") do
+        if node.folders then
+            local next_node = node.folders[part .. "/"] or node.folders[part]
+            if next_node then
+                node = next_node
+            else
+                return nil
+            end
+        else
+            return nil
+        end
+    end
+    return node
+end
+
 function RemoteLibrary:init()
     self.ui.menu:registerToMainMenu(self)
+
+    -- Hook FileChooser init to intercept FileChooser instantiation before first getList
+    local FileChooser = require("ui/widget/filechooser")
+    if not FileChooser._init_remotelibrary_patched then
+        FileChooser._init_remotelibrary_patched = true
+        local original_init = FileChooser.init
+        FileChooser.init = function(fc_self)
+            local plugin = fc_self.ui and (fc_self.ui.RemoteLibrary or fc_self.ui.remotelibrary)
+            if plugin then
+                plugin:hookFileChooser(fc_self)
+            end
+            original_init(fc_self)
+        end
+    end
+
+    -- Hook BookInfo:getDocProps to prevent opening non-existent proxy files
+    local BookInfo = require("apps/filemanager/filemanagerbookinfo")
+    if not BookInfo._remotelibrary_patched then
+        BookInfo._remotelibrary_patched = true
+        logger.info("[RemoteLibrary] Patching BookInfo:getDocProps")
+        local original_getDocProps = BookInfo.getDocProps
+        BookInfo.getDocProps = function(bi_self, file, book_props, no_open_document)
+            local home_dir = G_reader_settings:readSetting("home_dir") or Device.home_dir
+            if home_dir then
+                local rel_path = getRelativePath(home_dir, file)
+                if rel_path and lfs.attributes(file, "mode") ~= "file" then
+                    logger.info("[RemoteLibrary] BookInfo:getDocProps intercepted proxy:", file)
+                    return BookInfo.extendProps(nil, file)
+                end
+            end
+            return original_getDocProps(bi_self, file, book_props, no_open_document)
+        end
+    end
+
+    -- Hook BookInfoManager:getBookInfo and getDocProps to handle remote proxy files
+    local ok, BookInfoManager = pcall(require, "bookinfomanager")
+    if ok and BookInfoManager and not BookInfoManager._remotelibrary_patched then
+        BookInfoManager._remotelibrary_patched = true
+        logger.info("[RemoteLibrary] Patching BookInfoManager:getBookInfo and getDocProps")
+        local original_getBookInfo = BookInfoManager.getBookInfo
+        BookInfoManager.getBookInfo = function(bim_self, filepath, get_cover)
+            local home_dir = G_reader_settings:readSetting("home_dir") or Device.home_dir
+            if home_dir then
+                local rel_path = getRelativePath(home_dir, filepath)
+                if rel_path and lfs.attributes(filepath, "mode") ~= "file" then
+                    logger.info("[RemoteLibrary] BookInfoManager:getBookInfo intercepted proxy:", filepath)
+                    local directory, filename = util.splitFilePathName(filepath)
+                    local clean_filename = filename:gsub("^%[Cloud%]%s*", "")
+                    local filename_without_suffix = filemanagerutil.splitFileNameType(clean_filename)
+                    return {
+                        directory = directory,
+                        filename = filename,
+                        in_progress = 0,
+                        cover_fetched = "Y",
+                        has_meta = true,
+                        has_cover = nil,
+                        ignore_meta = false,
+                        ignore_cover = "Y",
+                        title = filename_without_suffix,
+                        authors = _("[Cloud]"),
+                        _is_directory = false,
+                        _no_provider = true
+                    }
+                end
+            end
+            return original_getBookInfo(bim_self, filepath, get_cover)
+        end
+
+        local original_bim_getDocProps = BookInfoManager.getDocProps
+        BookInfoManager.getDocProps = function(bim_self, filepath)
+            local home_dir = G_reader_settings:readSetting("home_dir") or Device.home_dir
+            if home_dir then
+                local rel_path = getRelativePath(home_dir, filepath)
+                if rel_path and lfs.attributes(filepath, "mode") ~= "file" then
+                    logger.info("[RemoteLibrary] BookInfoManager:getDocProps intercepted proxy:", filepath)
+                    return BookInfo.extendProps(nil, filepath)
+                end
+            end
+            return original_bim_getDocProps(bim_self, filepath)
+        end
+    end
+
+    -- Hook FileManager setupLayout to intercept FileChooser
+    local FileManager = require("apps/filemanager/filemanager")
+    if not FileManager._setupLayout_remotelibrary_patched then
+        FileManager._setupLayout_remotelibrary_patched = true
+        local original_setupLayout = FileManager.setupLayout
+        FileManager.setupLayout = function(fm_self)
+            original_setupLayout(fm_self)
+            local plugin = fm_self.RemoteLibrary or fm_self.remotelibrary
+            if plugin then
+                plugin:hookFileChooser(fm_self.file_chooser)
+            end
+        end
+    end
+
+    -- If file_chooser is already created, hook it now!
+    if self.ui.file_chooser then
+        self:hookFileChooser(self.ui.file_chooser)
+    end
+end
+
+function RemoteLibrary:hookFileChooser(fc)
+    local home_dir = G_reader_settings:readSetting("home_dir") or Device.home_dir
+    logger.info("[RemoteLibrary] hookFileChooser called, home_dir:", home_dir)
+    if not home_dir then return end
+
+    if fc._remotelibrary_patched then return end
+    fc._remotelibrary_patched = true
+
+    local original_getList = fc.getList
+    fc.getList = function(fc_self, path, collate)
+        local dirs, files = original_getList(fc_self, path, collate)
+
+        -- Load the map
+        local map_file_path = DataStorage:getSettingsDir() .. "/remotelibrary_map.lua"
+        local map_exists = util.fileExists(map_file_path)
+        logger.info("[RemoteLibrary] getList path:", path, "collate:", collate ~= nil, "map_exists:", map_exists)
+        local map
+        if map_exists then
+            local ok, res = pcall(dofile, map_file_path)
+            if ok then
+                map = res
+            else
+                logger.warn("[RemoteLibrary] Failed to load map:", res)
+            end
+        end
+
+        if not map then
+            logger.info("[RemoteLibrary] Map is nil, skipping overlay")
+            return dirs, files
+        end
+
+        -- Check if path is under home_dir
+        local rel_path = getRelativePath(home_dir, path)
+        logger.info("[RemoteLibrary] getRelativePath result:", rel_path)
+        if not rel_path then
+            logger.info("[RemoteLibrary] Path is not under home_dir, skipping overlay")
+            return dirs, files
+        end
+
+        -- Traverse remote map
+        local node = getNodeForRelativePath(map, rel_path)
+        logger.info("[RemoteLibrary] getNodeForRelativePath result exists:", node ~= nil)
+        if not node then
+            return dirs, files
+        end
+
+        -- Check existing local items
+        local local_exists = {}
+        if collate then
+            for _, d in ipairs(dirs) do
+                local name = d.text:gsub("/+$", "")
+                local_exists[name] = true
+            end
+            for _, f in ipairs(files) do
+                local_exists[f.text] = true
+            end
+        end
+
+        -- Overlay remote folders
+        if node.folders then
+            for folder_name, _ in pairs(node.folders) do
+                local folder_name_clean = folder_name:gsub("/+$", "")
+                local exists = false
+                if collate then
+                    exists = local_exists[folder_name_clean]
+                else
+                    exists = lfs.attributes(path .. "/" .. folder_name_clean) ~= nil
+                end
+
+                if not exists then
+                    if collate then
+                        local fullpath = path .. "/" .. folder_name_clean
+                        local item = {
+                            text = "[Cloud] " .. folder_name_clean .. "/",
+                            path = fullpath,
+                            is_proxy = true,
+                            is_folder = true,
+                            attr = { mode = "directory" },
+                            bidi_wrap_func = BD.directory,
+                        }
+                        item.mandatory = fc_self:getMenuItemMandatory(item)
+                        table.insert(dirs, item)
+                    else
+                        table.insert(dirs, true)
+                    end
+                end
+            end
+        end
+
+        -- Overlay remote files
+        if node.files then
+            for _, file in ipairs(node.files) do
+                local exists = false
+                if collate then
+                    exists = local_exists[file.name]
+                else
+                    exists = lfs.attributes(path .. "/" .. file.name) ~= nil
+                end
+
+                if not exists then
+                    if collate then
+                        local fullpath = path .. "/" .. file.name
+                        local item = {
+                            text = "[Cloud] " .. file.name,
+                            path = fullpath,
+                            is_proxy = true,
+                            is_file = true,
+                            url = file.url,
+                            filesize = file.filesize,
+                            modification = file.modification,
+                            attr = {
+                                mode = "file",
+                                size = file.filesize,
+                                modification = file.modification,
+                            },
+                            bidi_wrap_func = BD.filename,
+                        }
+                        if collate.item_func ~= nil then
+                            collate.item_func(item, fc_self.ui)
+                        end
+                        item.bold = false
+                        item.mandatory = fc_self:getMenuItemMandatory(item, collate)
+                        table.insert(files, item)
+                    else
+                        table.insert(files, true)
+                    end
+                end
+            end
+        end
+
+        return dirs, files
+    end
+
+    local original_changeToPath = fc.changeToPath
+    fc.changeToPath = function(fc_self, path, focused_path)
+        local rel_path = getRelativePath(home_dir, path)
+        if rel_path then
+            util.makePath(path)
+        end
+        return original_changeToPath(fc_self, path, focused_path)
+    end
+
+    local original_onFileSelect = fc.onFileSelect
+    fc.onFileSelect = function(fc_self, item)
+        if item.is_proxy and item.is_file then
+            if fc_self.ui and fc_self.ui.selected_files then
+                UIManager:show(InfoMessage:new{
+                    text = _("Operations on remote proxy files are not supported in select mode."),
+                    timeout = 3,
+                })
+                return true
+            else
+                self:downloadAndOpenFile(item)
+                return true
+            end
+        else
+            return original_onFileSelect(fc_self, item)
+        end
+    end
+
+    local original_showFileDialog = fc.showFileDialog
+    fc.showFileDialog = function(fc_self, item)
+        if item.is_proxy and item.is_file then
+            local file_dialog
+            local buttons = {
+                {
+                    {
+                        text = _("Download"),
+                        callback = function()
+                            UIManager:close(file_dialog)
+                            self:downloadAndOpenFile(item)
+                        end,
+                    },
+                    {
+                        text = _("Cancel"),
+                        callback = function()
+                            UIManager:close(file_dialog)
+                        end,
+                    },
+                }
+            }
+            file_dialog = ButtonDialog:new{
+                title = item.is_file and BD.filename(item.text) or BD.directory(item.text),
+                title_align = "center",
+                buttons = buttons,
+            }
+            fc_self.file_dialog = file_dialog
+            UIManager:show(file_dialog)
+            return true
+        else
+            return original_showFileDialog(fc_self, item)
+        end
+    end
+end
+
+function RemoteLibrary:downloadAndOpenFile(item)
+    self:loadSettings()
+    local cloudstorage_dir = self.settings:readSetting("cloudstorage_dir")
+    if not cloudstorage_dir then
+        UIManager:show(InfoMessage:new{
+            text = _("Please configure the Cloudstorage directory first."),
+            timeout = 3,
+        })
+        return
+    end
+
+    if not self.ui.cloudstorage then
+        UIManager:show(InfoMessage:new{
+            text = _("Cloud storage plugin is not enabled or available."),
+            timeout = 3,
+        })
+        return
+    end
+
+    self.ui.cloudstorage:getProviders()
+    self.ui.cloudstorage:loadSettings()
+
+    local provider = self.ui.cloudstorage.providers[cloudstorage_dir.type]
+    if not provider then
+        UIManager:show(InfoMessage:new{
+            text = _("Cloud storage provider not found."),
+            timeout = 3,
+        })
+        return
+    end
+
+    provider.base = cloudstorage_dir
+
+    local progressbar_dialog = ProgressbarDialog:new{
+        title = _("Downloading remote file…"),
+        subtitle = item.text:gsub("^%[Cloud%]%s*", ""),
+        progress_max = item.filesize or 0,
+        dismissable = true,
+        dismiss_text = _("Do you want to cancel downloading?"),
+    }
+
+    local is_cancelled = false
+    progressbar_dialog.dismiss_callback = function()
+        is_cancelled = true
+    end
+
+    progressbar_dialog:show()
+
+    provider.run(function()
+        if is_cancelled then
+            progressbar_dialog:close()
+            return
+        end
+
+        local progress_callback = function(progress)
+            if not is_cancelled then
+                progressbar_dialog:reportProgress(progress)
+            end
+        end
+
+        -- Ensure parent directory exists
+        local local_dir = item.path:match("(.*)/")
+        if local_dir then
+            util.makePath(local_dir)
+        end
+
+        -- Download
+        local code = provider.downloadFile(item.url, item.path, progress_callback)
+        progressbar_dialog:close()
+
+        if is_cancelled then
+            os.remove(item.path)
+            return
+        end
+
+        if code == 200 then
+            self.ui.file_chooser:refreshPath()
+            filemanagerutil.openFile(self.ui, item.path)
+        else
+            UIManager:show(InfoMessage:new{
+                text = string.format(_("Download failed: %s"), item.text:gsub("^%[Cloud%]%s*", "")),
+                timeout = 3,
+            })
+        end
+    end)
 end
 
 function RemoteLibrary:loadSettings()
