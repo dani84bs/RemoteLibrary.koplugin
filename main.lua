@@ -11,6 +11,7 @@ local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local ButtonDialog = require("ui/widget/buttondialog")
 local InfoMessage = require("ui/widget/infomessage")
 local ProgressbarDialog = require("ui/widget/progressbardialog")
+local ConfirmBox = require("ui/widget/confirmbox")
 local _ = require("gettext")
 local BD = require("ui/bidi")
 local Device = require("device")
@@ -172,193 +173,183 @@ function RemoteLibrary:hookFileChooser(fc)
     logger.info("[RemoteLibrary] hookFileChooser called, home_dir:", home_dir)
     if not home_dir then return end
 
-    if fc._remotelibrary_patched then return end
-    fc._remotelibrary_patched = true
+    if not fc._remotelibrary_patched then
+        fc._remotelibrary_patched = true
 
-    local original_getList = fc.getList
-    fc.getList = function(fc_self, path, collate)
-        local dirs, files = original_getList(fc_self, path, collate)
+        local original_getList = fc.getList
+        fc.getList = function(fc_self, path, collate)
+            local dirs, files = original_getList(fc_self, path, collate)
 
-        -- Load the map
-        local map_file_path = DataStorage:getSettingsDir() .. "/remotelibrary_map.lua"
-        local map_exists = util.fileExists(map_file_path)
-        logger.info("[RemoteLibrary] getList path:", path, "collate:", collate ~= nil, "map_exists:", map_exists)
-        local map
-        if map_exists then
-            local ok, res = pcall(dofile, map_file_path)
-            if ok then
-                map = res
-            else
-                logger.warn("[RemoteLibrary] Failed to load map:", res)
-            end
-        end
-
-        if not map then
-            logger.info("[RemoteLibrary] Map is nil, skipping overlay")
-            return dirs, files
-        end
-
-        -- Check if path is under home_dir
-        local rel_path = getRelativePath(home_dir, path)
-        logger.info("[RemoteLibrary] getRelativePath result:", rel_path)
-        if not rel_path then
-            logger.info("[RemoteLibrary] Path is not under home_dir, skipping overlay")
-            return dirs, files
-        end
-
-        -- Traverse remote map
-        local node = getNodeForRelativePath(map, rel_path)
-        logger.info("[RemoteLibrary] getNodeForRelativePath result exists:", node ~= nil)
-        if not node then
-            return dirs, files
-        end
-
-        -- Check existing local items
-        local local_exists = {}
-        if collate then
-            for _, d in ipairs(dirs) do
-                local name = d.text:gsub("/+$", "")
-                local_exists[name] = true
-            end
-            for _, f in ipairs(files) do
-                local_exists[f.text] = true
-            end
-        end
-
-        -- Overlay remote folders
-        if node.folders then
-            for folder_name, _ in pairs(node.folders) do
-                local folder_name_clean = folder_name:gsub("/+$", "")
-                local exists = false
-                if collate then
-                    exists = local_exists[folder_name_clean]
+            -- Load the map
+            local map_file_path = DataStorage:getSettingsDir() .. "/remotelibrary_map.lua"
+            local map_exists = util.fileExists(map_file_path)
+            logger.info("[RemoteLibrary] getList path:", path, "collate:", collate ~= nil, "map_exists:", map_exists)
+            local map
+            if map_exists then
+                local ok, res = pcall(dofile, map_file_path)
+                if ok then
+                    map = res
                 else
-                    exists = lfs.attributes(path .. "/" .. folder_name_clean) ~= nil
+                    logger.warn("[RemoteLibrary] Failed to load map:", res)
                 end
+            end
 
-                if not exists then
+            if not map then
+                logger.info("[RemoteLibrary] Map is nil, skipping overlay")
+                return dirs, files
+            end
+
+            -- Check if path is under home_dir
+            local rel_path = getRelativePath(home_dir, path)
+            logger.info("[RemoteLibrary] getRelativePath result:", rel_path)
+            if not rel_path then
+                logger.info("[RemoteLibrary] Path is not under home_dir, skipping overlay")
+                return dirs, files
+            end
+
+            -- Traverse remote map
+            local node = getNodeForRelativePath(map, rel_path)
+            logger.info("[RemoteLibrary] getNodeForRelativePath result exists:", node ~= nil)
+            if not node then
+                return dirs, files
+            end
+
+            -- Check existing local items
+            local local_exists = {}
+            if collate then
+                for _, d in ipairs(dirs) do
+                    local name = d.text:gsub("/+$", "")
+                    local_exists[name] = true
+                end
+                for _, f in ipairs(files) do
+                    local_exists[f.text] = true
+                end
+            end
+
+            -- Overlay remote folders
+            if node.folders then
+                for folder_name, _ in pairs(node.folders) do
+                    local folder_name_clean = folder_name:gsub("/+$", "")
+                    local exists = false
                     if collate then
-                        local fullpath = path .. "/" .. folder_name_clean
-                        local item = {
-                            text = "[Cloud] " .. folder_name_clean .. "/",
-                            path = fullpath,
-                            is_proxy = true,
-                            is_folder = true,
-                            attr = { mode = "directory" },
-                            bidi_wrap_func = BD.directory,
-                        }
-                        item.mandatory = fc_self:getMenuItemMandatory(item)
-                        table.insert(dirs, item)
+                        exists = local_exists[folder_name_clean]
                     else
-                        table.insert(dirs, true)
+                        exists = lfs.attributes(path .. "/" .. folder_name_clean) ~= nil
                     end
-                end
-            end
-        end
 
-        -- Overlay remote files
-        if node.files then
-            for _, file in ipairs(node.files) do
-                local exists = false
-                if collate then
-                    exists = local_exists[file.name]
-                else
-                    exists = lfs.attributes(path .. "/" .. file.name) ~= nil
-                end
-
-                if not exists then
-                    if collate then
-                        local fullpath = path .. "/" .. file.name
-                        local item = {
-                            text = "[Cloud] " .. file.name,
-                            path = fullpath,
-                            is_proxy = true,
-                            is_file = true,
-                            url = file.url,
-                            filesize = file.filesize,
-                            modification = file.modification,
-                            attr = {
-                                mode = "file",
-                                size = file.filesize,
-                                modification = file.modification,
-                            },
-                            bidi_wrap_func = BD.filename,
-                        }
-                        if collate.item_func ~= nil then
-                            collate.item_func(item, fc_self.ui)
+                    if not exists then
+                        if collate then
+                            local fullpath = path .. "/" .. folder_name_clean
+                            local item = {
+                                text = "[Cloud] " .. folder_name_clean .. "/",
+                                path = fullpath,
+                                is_proxy = true,
+                                is_folder = true,
+                                attr = { mode = "directory" },
+                                bidi_wrap_func = BD.directory,
+                            }
+                            item.mandatory = fc_self:getMenuItemMandatory(item)
+                            table.insert(dirs, item)
+                        else
+                            table.insert(dirs, true)
                         end
-                        item.bold = false
-                        item.mandatory = fc_self:getMenuItemMandatory(item, collate)
-                        table.insert(files, item)
-                    else
-                        table.insert(files, true)
                     end
                 end
             end
-        end
 
-        return dirs, files
-    end
+            -- Overlay remote files
+            if node.files then
+                for _, file in ipairs(node.files) do
+                    local exists = false
+                    if collate then
+                        exists = local_exists[file.name]
+                    else
+                        exists = lfs.attributes(path .. "/" .. file.name) ~= nil
+                    end
 
-    local original_changeToPath = fc.changeToPath
-    fc.changeToPath = function(fc_self, path, focused_path)
-        local rel_path = getRelativePath(home_dir, path)
-        if rel_path then
-            util.makePath(path)
-        end
-        return original_changeToPath(fc_self, path, focused_path)
-    end
-
-    local original_onFileSelect = fc.onFileSelect
-    fc.onFileSelect = function(fc_self, item)
-        if item.is_proxy and item.is_file then
-            if fc_self.ui and fc_self.ui.selected_files then
-                UIManager:show(InfoMessage:new{
-                    text = _("Operations on remote proxy files are not supported in select mode."),
-                    timeout = 3,
-                })
-                return true
-            else
-                self:downloadAndOpenFile(item)
-                return true
+                    if not exists then
+                        if collate then
+                            local fullpath = path .. "/" .. file.name
+                            local item = {
+                                text = "[Cloud] " .. file.name,
+                                path = fullpath,
+                                is_proxy = true,
+                                is_file = true,
+                                url = file.url,
+                                filesize = file.filesize,
+                                modification = file.modification,
+                                attr = {
+                                    mode = "file",
+                                    size = file.filesize,
+                                    modification = file.modification,
+                                },
+                                bidi_wrap_func = BD.filename,
+                            }
+                            if collate.item_func ~= nil then
+                                collate.item_func(item, fc_self.ui)
+                            end
+                            item.bold = false
+                            item.mandatory = fc_self:getMenuItemMandatory(item, collate)
+                            table.insert(files, item)
+                        else
+                            table.insert(files, true)
+                        end
+                    end
+                end
             end
-        else
-            return original_onFileSelect(fc_self, item)
+
+            return dirs, files
+        end
+
+        local original_changeToPath = fc.changeToPath
+        fc.changeToPath = function(fc_self, path, focused_path)
+            local rel_path = getRelativePath(home_dir, path)
+            if rel_path then
+                util.makePath(path)
+            end
+            return original_changeToPath(fc_self, path, focused_path)
         end
     end
 
-    local original_showFileDialog = fc.showFileDialog
-    fc.showFileDialog = function(fc_self, item)
-        if item.is_proxy and item.is_file then
-            local file_dialog
-            local buttons = {
-                {
-                    {
-                        text = _("Download"),
-                        callback = function()
-                            UIManager:close(file_dialog)
+    if fc.onFileSelect and fc.onFileSelect ~= fc._remotelibrary_hooked_onFileSelect then
+        local original_onFileSelect = fc.onFileSelect
+        fc.onFileSelect = function(fc_self, item)
+            if item.is_proxy and item.is_file then
+                if fc_self.ui and fc_self.ui.selected_files then
+                    UIManager:show(InfoMessage:new{
+                        text = _("Operations on remote proxy files are not supported in select mode."),
+                        timeout = 3,
+                    })
+                    return true
+                else
+                    local clean_filename = item.text:gsub("^%[Cloud%]%s*", "")
+                    UIManager:show(ConfirmBox:new{
+                        text = string.format(_("Would you like to download %s?"), clean_filename),
+                        ok_text = _("Download"),
+                        cancel_text = _("Cancel"),
+                        ok_callback = function()
                             self:downloadAndOpenFile(item)
                         end,
-                    },
-                    {
-                        text = _("Cancel"),
-                        callback = function()
-                            UIManager:close(file_dialog)
-                        end,
-                    },
-                }
-            }
-            file_dialog = ButtonDialog:new{
-                title = item.is_file and BD.filename(item.text) or BD.directory(item.text),
-                title_align = "center",
-                buttons = buttons,
-            }
-            fc_self.file_dialog = file_dialog
-            UIManager:show(file_dialog)
-            return true
-        else
-            return original_showFileDialog(fc_self, item)
+                    })
+                    return true
+                end
+            else
+                return original_onFileSelect(fc_self, item)
+            end
         end
+        fc._remotelibrary_hooked_onFileSelect = fc.onFileSelect
+    end
+
+    if fc.showFileDialog and fc.showFileDialog ~= fc._remotelibrary_hooked_showFileDialog then
+        local original_showFileDialog = fc.showFileDialog
+        fc.showFileDialog = function(fc_self, item)
+            if item.is_proxy and item.is_file then
+                return true
+            else
+                return original_showFileDialog(fc_self, item)
+            end
+        end
+        fc._remotelibrary_hooked_showFileDialog = fc.showFileDialog
     end
 end
 
@@ -422,6 +413,7 @@ function RemoteLibrary:downloadAndOpenFile(item)
             end
         end
 
+        logger.info("[RemoteLibrary] Starting download", "URL:", item.url, "local path:", item.path, "provider:", cloudstorage_dir.type)
         -- Ensure parent directory exists
         local local_dir = item.path:match("(.*)/")
         if local_dir then
@@ -430,6 +422,8 @@ function RemoteLibrary:downloadAndOpenFile(item)
 
         -- Download
         local code = provider.downloadFile(item.url, item.path, progress_callback)
+        logger.info("[RemoteLibrary] Download finished", "code:", code, "file exists:", lfs.attributes(item.path) ~= nil)
+        progressbar_dialog.dismiss_callback = nil
         progressbar_dialog:close()
 
         if is_cancelled then

@@ -429,7 +429,14 @@ return {
             assert.equals(0, #files)
         end)
 
-        it("intercepts onFileSelect and invokes download for proxy file", function()
+        it("intercepts onFileSelect and shows ConfirmBox for proxy file", function()
+            local UIManager = require("ui/uimanager")
+            local original_show = UIManager.show
+            local dialog_shown = nil
+            UIManager.show = function(self, widget)
+                dialog_shown = widget
+            end
+
             package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
             local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
 
@@ -452,9 +459,17 @@ return {
 
             plugin_instance:hookFileChooser(mock_fc)
 
-            local proxy_item = { is_proxy = true, is_file = true, text = "[☁️] book.epub" }
+            local proxy_item = { is_proxy = true, is_file = true, text = "[Cloud] book.epub" }
             mock_fc:onFileSelect(proxy_item)
 
+            UIManager.show = original_show
+
+            assert.is_not_nil(dialog_shown)
+            assert.equals("Would you like to download book.epub?", dialog_shown.text)
+            assert.equals("Download", dialog_shown.ok_text)
+            assert.equals("Cancel", dialog_shown.cancel_text)
+
+            dialog_shown.ok_callback()
             assert.is_true(download_called)
         end)
 
@@ -489,7 +504,7 @@ return {
             assert.is_true(original_onFileSelect_called)
         end)
 
-        it("intercepts showFileDialog and shows custom download/cancel dialog", function()
+        it("intercepts showFileDialog and returns true without showing dialog for proxy file", function()
             local UIManager = require("ui/uimanager")
             local original_show = UIManager.show
             local dialog_shown = nil
@@ -519,15 +534,12 @@ return {
             plugin_instance:hookFileChooser(mock_fc)
 
             local proxy_item = { is_proxy = true, is_file = true, text = "[☁️] book.epub" }
-            mock_fc:showFileDialog(proxy_item)
+            local res = mock_fc:showFileDialog(proxy_item)
 
             UIManager.show = original_show
 
-            assert.is_not_nil(dialog_shown)
-            assert.is_table(dialog_shown.buttons)
-            assert.equals(1, #dialog_shown.buttons)
-            assert.equals("Download", dialog_shown.buttons[1][1].text)
-            assert.equals("Cancel", dialog_shown.buttons[1][2].text)
+            assert.is_true(res)
+            assert.is_nil(dialog_shown)
         end)
     end)
 end)
