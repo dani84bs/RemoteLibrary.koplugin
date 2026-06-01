@@ -1,0 +1,17 @@
+describe("RemoteLibrary plugin", function()
+    setup(function()
+        require("commonrequire")
+    end)
+
+    it("can load metadata", function()
+        local meta = dofile("plugins/RemoteLibrary.koplugin/_meta.lua")
+        assert.is_table(meta)
+        assert.equals("Remote Library", meta.fullname)
+    end)
+
+    it("can load main module", function()
+        local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+        assert.is_table(RemoteLibrary)
+        assert.equals("remotelibrary", RemoteLibrary.name)
+    end)
+end)
