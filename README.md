@@ -25,10 +25,10 @@ graph TD
     A[FileChooser:getList] -->|Intercepts list| B{Check Local Directory}
     B -->|Under home_dir| C[Query remotelibrary_map.lua]
     B -->|Outside home_dir| D[Return Local Files Only]
-    C -->|Overlay| E[Add '[Cloud]' proxies for directories and files]
+    C -->|Overlay| E["Add '[Cloud]' proxies for directories and files"]
     E --> F[Display merged file list]
     
-    F -->|Tap on [Cloud] file| G[Download & Open]
+    F -->|"Tap on [Cloud] file"| G["Download & Open"]
     G -->|Invoke| H[cloudstorage provider]
     H -->|Saves file locally| I[Open via FileManager]
 ```
