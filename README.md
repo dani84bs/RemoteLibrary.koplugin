@@ -1,7 +1,7 @@
 # ☁️ RemoteLibrary KOReader Plugin
 
 [![KOReader](https://img.shields.io/badge/KOReader-Plugin-blueviolet.svg?style=for-the-badge)](https://github.com/koreader/koreader)
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg?style=for-the-badge)](https://www.gnu.org/licenses/gpl-3.0)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
 [![Lua](https://img.shields.io/badge/Lua-5.1%20%2F%20JIT-orange.svg?style=for-the-badge)](https://www.lua.org/)
 
 A feature-rich KOReader plugin designed to seamlessly overlay your remote cloud library on top of your local e-reader filesystem. With **RemoteLibrary**, you can browse, download, and open files from your cloud storage providers on-demand as if they were stored locally.
