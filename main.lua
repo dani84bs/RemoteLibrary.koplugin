@@ -28,18 +28,102 @@ local RemoteLibrary = WidgetContainer:extend{
     updated = nil,
 }
 
+local function canonicalizePath(path)
+    if not path then return nil end
+    local is_absolute = path:sub(1, 1) == "/"
+    local segments = {}
+    for segment in path:gmatch("[^/]+") do
+        if segment == "." then
+            -- do nothing
+        elseif segment == ".." then
+            if #segments > 0 and segments[#segments] ~= ".." then
+                table.remove(segments)
+            else
+                if not is_absolute then
+                    table.insert(segments, "..")
+                end
+            end
+        else
+            table.insert(segments, segment)
+        end
+    end
+    local res = table.concat(segments, "/")
+    if is_absolute then
+        return "/" .. res
+    else
+        return res
+    end
+end
+
+local function makePhysicalPath(path)
+    local lfs = require("libs/libkoreader-lfs")
+    local attributes = lfs.original_attributes or lfs.attributes
+
+    if attributes(path, "mode") == "directory" then
+        return true
+    end
+
+    local components
+    if path:sub(1, 1) == "/" then
+        components = "/"
+    else
+        components = ""
+    end
+
+    local success, err
+    for component in path:gmatch("([^/]+)") do
+        components = components .. component .. "/"
+        if attributes(components, "mode") == nil then
+            success, err = lfs.mkdir(components)
+            if not success then
+                return nil, err
+            end
+        end
+    end
+
+    return success, err
+end
+
 local function getRelativePath(home_dir, current_path)
+    if not home_dir or not current_path then return nil end
+
+    local h_clean = home_dir:gsub("/+$", "")
+    local c_clean = current_path:gsub("/+$", "")
+
+    -- 1. Match unresolved paths first
+    if c_clean == h_clean then
+        return ""
+    end
+    if c_clean:sub(1, #h_clean + 1) == h_clean .. "/" then
+        return c_clean:sub(#h_clean + 2)
+    end
+
+    -- 2. Try matching resolved paths
     local ffiUtil = require("ffi/util")
-    local home = ffiUtil.realpath(home_dir) or home_dir
-    local curr = ffiUtil.realpath(current_path) or current_path
+    local realpath = ffiUtil.original_realpath or ffiUtil.realpath
+    local home = realpath(home_dir) or home_dir
+    local curr = realpath(current_path)
+    if not curr then
+        local parent, name = current_path:match("(.*)/(.*)")
+        if parent then
+            local real_parent = realpath(parent)
+            if real_parent then
+                curr = real_parent .. "/" .. name
+            end
+        end
+    end
+    curr = curr or current_path
+
     home = home:gsub("/+$", "")
     curr = curr:gsub("/+$", "")
+
     if curr == home then
         return ""
     end
     if curr:sub(1, #home + 1) == home .. "/" then
         return curr:sub(#home + 2)
     end
+
     return nil
 end
 
@@ -64,8 +148,309 @@ local function getNodeForRelativePath(map, rel_path)
     return node
 end
 
+local _cached_map = nil
+
+local function getRemoteLibraryMap()
+    if _cached_map then
+        return _cached_map
+    end
+    local map_file_path = DataStorage:getSettingsDir() .. "/remotelibrary_map.lua"
+    if util.fileExists(map_file_path) then
+        local ok, res = pcall(dofile, map_file_path)
+        if ok then
+            _cached_map = res
+            return _cached_map
+        else
+            logger.warn("[RemoteLibrary] Failed to load map:", res)
+        end
+    end
+    return nil
+end
+
+local function getVirtualAttributes(map, rel_path)
+    rel_path = rel_path:gsub("/+$", "")
+
+    -- Check if it is a directory
+    local node = getNodeForRelativePath(map, rel_path)
+    if node then
+        return {
+            mode = "directory",
+            size = 0,
+            modification = os.time(),
+            access = os.time(),
+            change = os.time(),
+        }
+    end
+
+    -- Check if it is a file
+    local parent_path, target_name = rel_path:match("(.*)/(.*)")
+    if not parent_path then
+        parent_path = ""
+        target_name = rel_path
+    end
+
+    local parent_node = getNodeForRelativePath(map, parent_path)
+    if parent_node and parent_node.files then
+        for _, file in ipairs(parent_node.files) do
+            if file.name == target_name then
+                return {
+                    mode = "file",
+                    size = file.filesize or 0,
+                    modification = file.modification or os.time(),
+                    access = file.modification or os.time(),
+                    change = file.modification or os.time(),
+                }
+            end
+        end
+    end
+
+    return nil
+end
+
 function RemoteLibrary:init()
     self.ui.menu:registerToMainMenu(self)
+
+    -- Hook ffi/util realpath globally
+    local ffiUtil = require("ffi/util")
+    if not ffiUtil._remotelibrary_patched then
+        ffiUtil._remotelibrary_patched = true
+        logger.info("[RemoteLibrary] Patching ffi/util realpath")
+        local original_realpath = ffiUtil.realpath
+        ffiUtil.original_realpath = original_realpath
+        ffiUtil.realpath = function(path)
+            if not path then return nil end
+            path = canonicalizePath(path)
+            local resolved = original_realpath(path)
+            if resolved then
+                return resolved
+            end
+            local hdir = G_reader_settings:readSetting("home_dir") or Device.home_dir
+            if not hdir then return nil end
+            local rel_path = getRelativePath(hdir, path)
+            if not rel_path then return nil end
+            local map = getRemoteLibraryMap()
+            if not map then return nil end
+            if not getVirtualAttributes(map, rel_path) then return nil end
+            local parts = {}
+            local current = path
+            local resolved_base = nil
+            while current and current ~= "" and current ~= "/" do
+                local parent, name = current:match("(.*)/(.*)")
+                if not parent then
+                    name = current
+                    parent = ""
+                end
+                table.insert(parts, 1, name)
+                resolved_base = original_realpath(parent == "" and "/" or parent)
+                if resolved_base then break end
+                current = parent
+            end
+            if resolved_base then
+                resolved_base = resolved_base:gsub("/+$", "")
+                return resolved_base .. "/" .. table.concat(parts, "/")
+            end
+            return path
+        end
+    end
+
+    -- Hook libs/libkoreader-lfs globally to make virtual files visible to Bookshelf/KOReader
+    local lfs = require("libs/libkoreader-lfs")
+    if not lfs._remotelibrary_patched then
+        lfs._remotelibrary_patched = true
+        logger.info("[RemoteLibrary] Patching libs/libkoreader-lfs")
+        local original_dir = lfs.dir
+        local original_attributes = lfs.attributes
+
+        lfs.original_dir = original_dir
+        lfs.original_attributes = original_attributes
+
+        lfs.dir = function(path)
+            local hdir = G_reader_settings:readSetting("home_dir") or Device.home_dir
+            if not hdir then
+                return original_dir(path)
+            end
+
+            local rel_path = getRelativePath(hdir, path)
+            if not rel_path then
+                return original_dir(path)
+            end
+
+            local map = getRemoteLibraryMap()
+            if not map then
+                return original_dir(path)
+            end
+
+            local node = getNodeForRelativePath(map, rel_path)
+            if not node then
+                return original_dir(path)
+            end
+
+            -- Collect all local items first (if the directory exists)
+            local local_items = {}
+            local ok_dir, iter, dir_obj = pcall(original_dir, path)
+            if ok_dir and iter then
+                for entry in iter, dir_obj do
+                    if entry ~= "." and entry ~= ".." then
+                        local_items[entry] = true
+                    end
+                end
+            end
+
+            -- Collect all virtual items (not already in local_items)
+            local virtual_items = {}
+            
+            -- Overlay folders
+            if node.folders then
+                for folder_name, _ in pairs(node.folders) do
+                    local clean_name = folder_name:gsub("/+$", "")
+                    if not local_items[clean_name] then
+                        table.insert(virtual_items, clean_name)
+                    end
+                end
+            end
+
+            -- Overlay files
+            if node.files then
+                for _, file in ipairs(node.files) do
+                    if not local_items[file.name] then
+                        table.insert(virtual_items, file.name)
+                    end
+                end
+            end
+
+            -- If there are no virtual items, return the original iterator
+            if #virtual_items == 0 then
+                return original_dir(path)
+            end
+
+            -- Construct combined list of entries
+            local all_entries = { ".", ".." }
+            for item, _ in pairs(local_items) do
+                table.insert(all_entries, item)
+            end
+            for _, item in ipairs(virtual_items) do
+                table.insert(all_entries, item)
+            end
+
+            local idx = 0
+            local custom_iterator = function()
+                idx = idx + 1
+                return all_entries[idx]
+            end
+
+            local dummy_dir_obj = {
+                close = function() end
+            }
+
+            return custom_iterator, dummy_dir_obj
+        end
+
+        lfs.attributes = function(path, request)
+            -- First, check if the real file/directory exists on disk
+            local real_res
+            if request then
+                real_res = original_attributes(path, request)
+            else
+                real_res = original_attributes(path)
+            end
+
+            if real_res ~= nil then
+                return real_res
+            end
+
+            -- Otherwise, see if it is a virtual path in our RemoteLibrary map
+            local hdir = G_reader_settings:readSetting("home_dir") or Device.home_dir
+            if not hdir then
+                return nil
+            end
+
+            local rel_path = getRelativePath(hdir, path)
+            if not rel_path then
+                return nil
+            end
+
+            local map = getRemoteLibraryMap()
+            if not map then
+                return nil
+            end
+
+            local virtual_attr = getVirtualAttributes(map, rel_path)
+            if not virtual_attr then
+                return nil
+            end
+
+            if request then
+                return virtual_attr[request]
+            else
+                return virtual_attr
+            end
+        end
+    end
+
+    -- Hook ReaderUI:showReader globally to intercept opening virtual books and download them first
+    local ok_reader, ReaderUI = pcall(require, "apps/reader/readerui")
+    if ok_reader and ReaderUI and not ReaderUI._remotelibrary_patched then
+        ReaderUI._remotelibrary_patched = true
+        logger.info("[RemoteLibrary] Patching ReaderUI:showReader")
+        local original_showReader = ReaderUI.showReader
+        ReaderUI.showReader = function(r_self, file, provider, seamless, is_provider_forced, after_open_callback)
+            local hdir = G_reader_settings:readSetting("home_dir") or Device.home_dir
+            if hdir then
+                local rel_path = getRelativePath(hdir, file)
+                if rel_path then
+                    -- Let's see if the file exists on disk
+                    local exists_on_disk = lfs.original_attributes(file, "mode") == "file"
+                    if not exists_on_disk then
+                        -- Check if it exists in the remote map
+                        local map = getRemoteLibraryMap()
+                        if map then
+                            local parent_path, target_name = rel_path:match("(.*)/(.*)")
+                            if not parent_path then
+                                parent_path = ""
+                                target_name = rel_path
+                            end
+                            local parent_node = getNodeForRelativePath(map, parent_path)
+                            if parent_node and parent_node.files then
+                                local matched_file
+                                for _, f in ipairs(parent_node.files) do
+                                    if f.name == target_name then
+                                        matched_file = f
+                                        break
+                                    end
+                                end
+                                if matched_file then
+                                    -- It is a virtual proxy file! Prompt download and then open!
+                                    local item = {
+                                        text = "[Cloud] " .. target_name,
+                                        path = file,
+                                        is_proxy = true,
+                                        is_file = true,
+                                        url = matched_file.url,
+                                        filesize = matched_file.filesize,
+                                        modification = matched_file.modification,
+                                    }
+                                    UIManager:show(ConfirmBox:new{
+                                        text = string.format(_("Would you like to download %s?"), target_name),
+                                        ok_text = _("Download"),
+                                        cancel_text = _("Cancel"),
+                                        ok_callback = function()
+                                            self:downloadRemoteFile(item, function(success)
+                                                if success then
+                                                    original_showReader(r_self, file, provider, seamless, is_provider_forced, after_open_callback)
+                                                end
+                                            end)
+                                        end,
+                                    })
+                                    return
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+            return original_showReader(r_self, file, provider, seamless, is_provider_forced, after_open_callback)
+        end
+    end
 
     -- Hook FileChooser init to intercept FileChooser instantiation before first getList
     local FileChooser = require("ui/widget/filechooser")
@@ -88,10 +473,10 @@ function RemoteLibrary:init()
         logger.info("[RemoteLibrary] Patching BookInfo:getDocProps")
         local original_getDocProps = BookInfo.getDocProps
         BookInfo.getDocProps = function(bi_self, file, book_props, no_open_document)
-            local home_dir = G_reader_settings:readSetting("home_dir") or Device.home_dir
-            if home_dir then
-                local rel_path = getRelativePath(home_dir, file)
-                if rel_path and lfs.attributes(file, "mode") ~= "file" then
+            local hdir = G_reader_settings:readSetting("home_dir") or Device.home_dir
+            if hdir then
+                local rel_path = getRelativePath(hdir, file)
+                if rel_path and lfs.original_attributes(file, "mode") ~= "file" then
                     logger.info("[RemoteLibrary] BookInfo:getDocProps intercepted proxy:", file)
                     return BookInfo.extendProps(nil, file)
                 end
@@ -107,10 +492,10 @@ function RemoteLibrary:init()
         logger.info("[RemoteLibrary] Patching BookInfoManager:getBookInfo and getDocProps")
         local original_getBookInfo = BookInfoManager.getBookInfo
         BookInfoManager.getBookInfo = function(bim_self, filepath, get_cover)
-            local home_dir = G_reader_settings:readSetting("home_dir") or Device.home_dir
-            if home_dir then
-                local rel_path = getRelativePath(home_dir, filepath)
-                if rel_path and lfs.attributes(filepath, "mode") ~= "file" then
+            local hdir = G_reader_settings:readSetting("home_dir") or Device.home_dir
+            if hdir then
+                local rel_path = getRelativePath(hdir, filepath)
+                if rel_path and lfs.original_attributes(filepath, "mode") ~= "file" then
                     logger.info("[RemoteLibrary] BookInfoManager:getBookInfo intercepted proxy:", filepath)
                     local directory, filename = util.splitFilePathName(filepath)
                     local clean_filename = filename:gsub("^%[Cloud%]%s*", "")
@@ -136,10 +521,10 @@ function RemoteLibrary:init()
 
         local original_bim_getDocProps = BookInfoManager.getDocProps
         BookInfoManager.getDocProps = function(bim_self, filepath)
-            local home_dir = G_reader_settings:readSetting("home_dir") or Device.home_dir
-            if home_dir then
-                local rel_path = getRelativePath(home_dir, filepath)
-                if rel_path and lfs.attributes(filepath, "mode") ~= "file" then
+            local hdir = G_reader_settings:readSetting("home_dir") or Device.home_dir
+            if hdir then
+                local rel_path = getRelativePath(hdir, filepath)
+                if rel_path and lfs.original_attributes(filepath, "mode") ~= "file" then
                     logger.info("[RemoteLibrary] BookInfoManager:getDocProps intercepted proxy:", filepath)
                     return BookInfo.extendProps(nil, filepath)
                 end
@@ -181,118 +566,63 @@ function RemoteLibrary:hookFileChooser(fc)
             local dirs, files = original_getList(fc_self, path, collate)
 
             -- Load the map
-            local map_file_path = DataStorage:getSettingsDir() .. "/remotelibrary_map.lua"
-            local map_exists = util.fileExists(map_file_path)
-            logger.info("[RemoteLibrary] getList path:", path, "collate:", collate ~= nil, "map_exists:", map_exists)
-            local map
-            if map_exists then
-                local ok, res = pcall(dofile, map_file_path)
-                if ok then
-                    map = res
-                else
-                    logger.warn("[RemoteLibrary] Failed to load map:", res)
-                end
-            end
-
+            local map = getRemoteLibraryMap()
             if not map then
-                logger.info("[RemoteLibrary] Map is nil, skipping overlay")
                 return dirs, files
             end
 
             -- Check if path is under home_dir
             local rel_path = getRelativePath(home_dir, path)
-            logger.info("[RemoteLibrary] getRelativePath result:", rel_path)
             if not rel_path then
-                logger.info("[RemoteLibrary] Path is not under home_dir, skipping overlay")
                 return dirs, files
             end
 
             -- Traverse remote map
             local node = getNodeForRelativePath(map, rel_path)
-            logger.info("[RemoteLibrary] getNodeForRelativePath result exists:", node ~= nil)
             if not node then
                 return dirs, files
             end
 
-            -- Check existing local items
-            local local_exists = {}
-            if collate then
-                for _, d in ipairs(dirs) do
-                    local name = d.text:gsub("/+$", "")
-                    local_exists[name] = true
-                end
-                for _, f in ipairs(files) do
-                    local_exists[f.text] = true
-                end
-            end
-
-            -- Overlay remote folders
-            if node.folders then
-                for folder_name, _ in pairs(node.folders) do
-                    local folder_name_clean = folder_name:gsub("/+$", "")
-                    local exists = false
-                    if collate then
-                        exists = local_exists[folder_name_clean]
-                    else
-                        exists = lfs.attributes(path .. "/" .. folder_name_clean) ~= nil
-                    end
-
-                    if not exists then
-                        if collate then
-                            local fullpath = path .. "/" .. folder_name_clean
-                            local item = {
-                                text = "[Cloud] " .. folder_name_clean .. "/",
-                                path = fullpath,
-                                is_proxy = true,
-                                is_folder = true,
-                                attr = { mode = "directory" },
-                                bidi_wrap_func = BD.directory,
-                            }
-                            item.mandatory = fc_self:getMenuItemMandatory(item)
-                            table.insert(dirs, item)
-                        else
-                            table.insert(dirs, true)
+            -- Post-process dirs to tag virtual ones with [Cloud]
+            for _, d in ipairs(dirs) do
+                if type(d) == "table" and d.path then
+                    local d_rel = getRelativePath(home_dir, d.path)
+                    if d_rel and lfs.original_attributes(d.path, "mode") ~= "directory" then
+                        d.is_proxy = true
+                        d.is_folder = true
+                        if not d.text:find("^%[Cloud%]") then
+                            local clean_name = d.text:gsub("/+$", "")
+                            d.text = "[Cloud] " .. clean_name .. "/"
                         end
                     end
                 end
             end
 
-            -- Overlay remote files
-            if node.files then
-                for _, file in ipairs(node.files) do
-                    local exists = false
-                    if collate then
-                        exists = local_exists[file.name]
-                    else
-                        exists = lfs.attributes(path .. "/" .. file.name) ~= nil
-                    end
-
-                    if not exists then
-                        if collate then
-                            local fullpath = path .. "/" .. file.name
-                            local item = {
-                                text = "[Cloud] " .. file.name,
-                                path = fullpath,
-                                is_proxy = true,
-                                is_file = true,
-                                url = file.url,
-                                filesize = file.filesize,
-                                modification = file.modification,
-                                attr = {
-                                    mode = "file",
-                                    size = file.filesize,
-                                    modification = file.modification,
-                                },
-                                bidi_wrap_func = BD.filename,
-                            }
-                            if collate.item_func ~= nil then
-                                collate.item_func(item, fc_self.ui)
+            -- Post-process files to tag virtual ones with [Cloud] and add url/size metadata
+            for _, f in ipairs(files) do
+                if type(f) == "table" and f.path then
+                    local f_rel = getRelativePath(home_dir, f.path)
+                    if f_rel and lfs.original_attributes(f.path, "mode") ~= "file" then
+                        f.is_proxy = true
+                        f.is_file = true
+                        local target_name = f_rel:match("[^/]+$") or f.text
+                        if node.files then
+                            for _, file in ipairs(node.files) do
+                                if file.name == target_name then
+                                    f.url = file.url
+                                    f.filesize = file.filesize
+                                    f.modification = file.modification
+                                    f.attr = {
+                                        mode = "file",
+                                        size = file.filesize,
+                                        modification = file.modification,
+                                    }
+                                    break
+                                end
                             end
-                            item.bold = false
-                            item.mandatory = fc_self:getMenuItemMandatory(item, collate)
-                            table.insert(files, item)
-                        else
-                            table.insert(files, true)
+                        end
+                        if not f.text:find("^%[Cloud%]") then
+                            f.text = "[Cloud] " .. f.text
                         end
                     end
                 end
@@ -305,7 +635,7 @@ function RemoteLibrary:hookFileChooser(fc)
         fc.changeToPath = function(fc_self, path, focused_path)
             local rel_path = getRelativePath(home_dir, path)
             if rel_path then
-                util.makePath(path)
+                makePhysicalPath(path)
             end
             return original_changeToPath(fc_self, path, focused_path)
         end
@@ -353,7 +683,7 @@ function RemoteLibrary:hookFileChooser(fc)
     end
 end
 
-function RemoteLibrary:downloadAndOpenFile(item)
+function RemoteLibrary:downloadRemoteFile(item, callback)
     self:loadSettings()
     local cloudstorage_dir = self.settings:readSetting("cloudstorage_dir")
     if not cloudstorage_dir then
@@ -361,26 +691,37 @@ function RemoteLibrary:downloadAndOpenFile(item)
             text = _("Please configure the Cloudstorage directory first."),
             timeout = 3,
         })
+        if callback then callback(false) end
         return
     end
 
-    if not self.ui.cloudstorage then
+    local cloudstorage = self.ui.cloudstorage
+    if not cloudstorage then
+        local FileManager = require("apps/filemanager/filemanager")
+        if FileManager.instance then
+            cloudstorage = FileManager.instance.cloudstorage
+        end
+    end
+
+    if not cloudstorage then
         UIManager:show(InfoMessage:new{
             text = _("Cloud storage plugin is not enabled or available."),
             timeout = 3,
         })
+        if callback then callback(false) end
         return
     end
 
-    self.ui.cloudstorage:getProviders()
-    self.ui.cloudstorage:loadSettings()
+    cloudstorage:getProviders()
+    cloudstorage:loadSettings()
 
-    local provider = self.ui.cloudstorage.providers[cloudstorage_dir.type]
+    local provider = cloudstorage.providers[cloudstorage_dir.type]
     if not provider then
         UIManager:show(InfoMessage:new{
             text = _("Cloud storage provider not found."),
             timeout = 3,
         })
+        if callback then callback(false) end
         return
     end
 
@@ -404,6 +745,7 @@ function RemoteLibrary:downloadAndOpenFile(item)
     provider.run(function()
         if is_cancelled then
             progressbar_dialog:close()
+            if callback then callback(false) end
             return
         end
 
@@ -413,32 +755,53 @@ function RemoteLibrary:downloadAndOpenFile(item)
             end
         end
 
-        logger.info("[RemoteLibrary] Starting download", "URL:", item.url, "local path:", item.path, "provider:", cloudstorage_dir.type)
+        logger.info("[RemoteLibrary] Starting download", "URL:", item.url, "local path:", item.path or item.filepath, "provider:", cloudstorage_dir.type)
         -- Ensure parent directory exists
-        local local_dir = item.path:match("(.*)/")
+        local target_path = item.path or item.filepath
+        local local_dir = target_path:match("(.*)/")
         if local_dir then
-            util.makePath(local_dir)
+            makePhysicalPath(local_dir)
         end
 
         -- Download
-        local code = provider.downloadFile(item.url, item.path, progress_callback)
-        logger.info("[RemoteLibrary] Download finished", "code:", code, "file exists:", lfs.attributes(item.path) ~= nil)
+        local code = provider.downloadFile(item.url, target_path, progress_callback)
+        logger.info("[RemoteLibrary] Download finished", "code:", code, "file exists:", lfs.original_attributes(target_path, "mode") == "file")
         progressbar_dialog.dismiss_callback = nil
         progressbar_dialog:close()
 
         if is_cancelled then
-            os.remove(item.path)
+            os.remove(target_path)
+            if callback then callback(false) end
             return
         end
 
         if code == 200 then
-            self.ui.file_chooser:refreshPath()
-            filemanagerutil.openFile(self.ui, item.path)
+            -- Refresh file chooser if we are in it
+            local fc = self.ui.file_chooser
+            if not fc then
+                local FileManager = require("apps/filemanager/filemanager")
+                if FileManager.instance then
+                    fc = FileManager.instance.file_chooser
+                end
+            end
+            if fc then
+                fc:refreshPath()
+            end
+            if callback then callback(true) end
         else
             UIManager:show(InfoMessage:new{
                 text = string.format(_("Download failed: %s"), item.text:gsub("^%[Cloud%]%s*", "")),
                 timeout = 3,
             })
+            if callback then callback(false) end
+        end
+    end)
+end
+
+function RemoteLibrary:downloadAndOpenFile(item)
+    self:downloadRemoteFile(item, function(success)
+        if success then
+            filemanagerutil.openFile(self.ui, item.path or item.filepath)
         end
     end)
 end
@@ -658,6 +1021,7 @@ function RemoteLibrary:reloadRemoteLibrary()
         if #queue == 0 then
             progressbar_dialog:close()
             saveMap()
+            _cached_map = nil
             UIManager:show(InfoMessage:new{
                 text = string.format(_("Reload complete: %d folders and %d files mapped."), folder_count, file_count),
                 timeout = 4,

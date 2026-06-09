@@ -209,14 +209,18 @@ describe("RemoteLibrary plugin", function()
 
     describe("Map Overlay", function()
         local original_attributes
+        local original_realpath
         local original_path
 
-        setup(function()
+        before_each(function()
             original_path = package.path
             package.path = package.path .. ";plugins/coverbrowser.koplugin/?.lua"
             local DataStorage = require("datastorage")
             local lfs = require("libs/libkoreader-lfs")
             original_attributes = lfs.attributes
+
+            local ffiUtil = require("ffi/util")
+            original_realpath = ffiUtil.realpath
 
             _G.G_reader_settings = {
                 readSetting = function(self, key, default)
@@ -266,10 +270,19 @@ return {
             end
         end)
 
-        teardown(function()
+        after_each(function()
             local DataStorage = require("datastorage")
             local lfs = require("libs/libkoreader-lfs")
             lfs.attributes = original_attributes
+            lfs._remotelibrary_patched = nil
+            lfs.original_attributes = nil
+            lfs.original_dir = nil
+
+            local ffiUtil = require("ffi/util")
+            ffiUtil.realpath = original_realpath
+            ffiUtil._remotelibrary_patched = nil
+            ffiUtil.original_realpath = nil
+
             package.path = original_path
             _G.G_reader_settings = nil
             _G.Device = nil
@@ -540,6 +553,273 @@ return {
 
             assert.is_true(res)
             assert.is_nil(dialog_shown)
+        end)
+
+        it("patches lfs.dir and lfs.attributes globally and maps virtual files/folders", function()
+            local lfs = require("libs/libkoreader-lfs")
+
+            package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+            local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+            local plugin_instance = setmetatable({
+                ui = { menu = { registerToMainMenu = function() end } },
+                settings = { readSetting = function() return nil end },
+                loadSettings = function() end
+            }, { __index = RemoteLibrary })
+
+            plugin_instance:init()
+
+            -- Let's test listing /books (home_dir is /books)
+            local files = {}
+            local ok, iter, dir_obj = pcall(lfs.dir, "/books")
+            assert.is_true(ok)
+            for entry in iter, dir_obj do
+                if entry ~= "." and entry ~= ".." then
+                    table.insert(files, entry)
+                end
+            end
+            
+            local has_book = false
+            local has_folder = false
+            for _, entry in ipairs(files) do
+                if entry == "remote_book.epub" then has_book = true end
+                if entry == "remote_folder" then has_folder = true end
+            end
+            assert.is_true(has_book)
+            assert.is_true(has_folder)
+
+            -- Check lfs.attributes
+            local attr_file = lfs.attributes("/books/remote_book.epub")
+            assert.is_table(attr_file)
+            assert.equals("file", attr_file.mode)
+            assert.equals(1024, attr_file.size)
+
+            local attr_dir = lfs.attributes("/books/remote_folder")
+            assert.is_table(attr_dir)
+            assert.equals("directory", attr_dir.mode)
+        end)
+
+        it("intercepts ReaderUI:showReader for virtual files and triggers download", function()
+            local UIManager = require("ui/uimanager")
+            local original_show = UIManager.show
+            local dialog_shown = nil
+            UIManager.show = function(self, widget)
+                dialog_shown = widget
+            end
+
+            local original_showReader_called = false
+            local mock_ReaderUI = {
+                showReader = function(self_r, file)
+                    original_showReader_called = true
+                end
+            }
+            package.loaded["apps/reader/readerui"] = mock_ReaderUI
+
+            -- Reload plugin to apply hook on mock_ReaderUI
+            package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+            local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+            local plugin_instance = setmetatable({
+                ui = {
+                    menu = { registerToMainMenu = function() end },
+                    cloudstorage = {
+                        getProviders = function() end,
+                        loadSettings = function() end,
+                        providers = {
+                            webdav = {
+                                run = function(callback) callback() end,
+                                downloadFile = function() return 200 end
+                            }
+                        }
+                    }
+                },
+                settings = {
+                    readSetting = function(self, key)
+                        if key == "cloudstorage_dir" then
+                            return { type = "webdav", url = "/books" }
+                        end
+                    end
+                },
+                loadSettings = function() end
+            }, { __index = RemoteLibrary })
+
+            local lfs = require("libs/libkoreader-lfs")
+            lfs._remotelibrary_patched = nil
+
+            plugin_instance:init()
+
+            -- Let's call the patched showReader
+            mock_ReaderUI.showReader(mock_ReaderUI, "/books/remote_book.epub")
+
+            -- It should show download confirm dialog
+            assert.is_not_nil(dialog_shown)
+            assert.equals("Would you like to download remote_book.epub?", dialog_shown.text)
+
+            -- Simulate clicking "Download"
+            dialog_shown.ok_callback()
+
+            -- Verify it successfully downloaded and then called original showReader
+            assert.is_true(original_showReader_called)
+
+            UIManager.show = original_show
+            package.loaded["apps/reader/readerui"] = nil
+        end)
+
+        it("handles symlinked home_dir and virtual subdirectories properly", function()
+            local lfs = require("libs/libkoreader-lfs")
+            local ffiUtil = require("ffi/util")
+            local original_realpath = ffiUtil.realpath
+
+            -- Mock realpath to simulate /books being a symlink to /Users/dani/books
+            ffiUtil.realpath = function(path)
+                if path == "/books" then
+                    return "/Users/dani/books"
+                elseif path == "/books/remote_folder" then
+                    return nil -- virtual folder, does not exist on disk
+                elseif path == "/Users/dani/books" then
+                    return "/Users/dani/books"
+                end
+                return original_realpath(path)
+            end
+
+            -- Now set home_dir to /books
+            _G.G_reader_settings = {
+                readSetting = function(self, key, default)
+                    if key == "home_dir" then
+                        return "/books"
+                    end
+                    return default
+                end,
+                nilOrTrue = function(self, key) return true end,
+                isTrue = function(self, key) return false end,
+                isFalse = function(self, key) return false end
+            }
+            _G.Device = { home_dir = "/books" }
+
+            package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+            local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+            local plugin_instance = setmetatable({
+                ui = { menu = { registerToMainMenu = function() end } },
+                settings = { readSetting = function() return nil end },
+                loadSettings = function() end
+            }, { __index = RemoteLibrary })
+
+            plugin_instance:init()
+
+            -- We check that lfs.attributes for /books/remote_folder is recognized as directory
+            local attr = lfs.attributes("/books/remote_folder")
+
+            -- Cleanup first
+            ffiUtil.realpath = original_realpath
+
+            assert.is_table(attr)
+            assert.equals("directory", attr.mode)
+        end)
+
+        it("handles ffiUtil.realpath on virtual paths", function()
+            local ffiUtil = require("ffi/util")
+            local original_realpath = ffiUtil.realpath
+
+            -- Mock realpath to simulate /books being a symlink to /Users/dani/books
+            ffiUtil.realpath = function(path)
+                if path == "/books" then
+                    return "/Users/dani/books"
+                elseif path == "/books/remote_folder" then
+                    return nil -- virtual folder, does not exist on disk
+                elseif path == "/Users/dani/books" then
+                    return "/Users/dani/books"
+                end
+                return original_realpath(path)
+            end
+
+            -- Now set home_dir to /books
+            _G.G_reader_settings = {
+                readSetting = function(self, key, default)
+                    if key == "home_dir" then
+                        return "/books"
+                    end
+                    return default
+                end,
+                nilOrTrue = function(self, key) return true end,
+                isTrue = function(self, key) return false end,
+                isFalse = function(self, key) return false end
+            }
+            _G.Device = { home_dir = "/books" }
+
+            package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+            local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+            local plugin_instance = setmetatable({
+                ui = { menu = { registerToMainMenu = function() end } },
+                settings = { readSetting = function() return nil end },
+                loadSettings = function() end
+            }, { __index = RemoteLibrary })
+
+            plugin_instance:init()
+
+            -- We check that ffiUtil.realpath resolves the virtual path to its correct resolved ancestor-based path
+            local resolved = ffiUtil.realpath("/books/remote_folder")
+            local resolved_parent = ffiUtil.realpath("/books/remote_folder/..")
+
+            -- Cleanup first
+            ffiUtil.realpath = original_realpath
+
+            assert.equals("/Users/dani/books/remote_folder", resolved)
+            assert.equals("/Users/dani/books", resolved_parent)
+        end)
+
+        it("creates physical parent directory during download for virtual nested files", function()
+            local lfs = require("libs/libkoreader-lfs")
+            local mkdir_called = nil
+            local original_mkdir = lfs.mkdir
+            lfs.mkdir = function(path)
+                mkdir_called = path
+                return true
+            end
+
+            package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+            local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+            local plugin_instance = setmetatable({
+                ui = {
+                    menu = { registerToMainMenu = function() end },
+                    cloudstorage = {
+                        getProviders = function() end,
+                        loadSettings = function() end,
+                        providers = {
+                            webdav = {
+                                run = function(callback) callback() end,
+                                downloadFile = function() return 200 end
+                            }
+                        }
+                    }
+                },
+                settings = {
+                    readSetting = function(self, key)
+                        if key == "cloudstorage_dir" then
+                            return { type = "webdav", url = "/books" }
+                        end
+                    end
+                },
+                loadSettings = function() end
+            }, { __index = RemoteLibrary })
+
+            plugin_instance:init()
+
+            local item = {
+                text = "nested_book.epub",
+                path = "/books/remote_folder/nested_book.epub",
+                url = "/remote_folder/nested_book.epub"
+            }
+
+            plugin_instance:downloadRemoteFile(item, function(success)
+                -- we don't strict-assert success if progressbar mocks are missing, but mkdir should be called
+            end)
+
+            lfs.mkdir = original_mkdir
+
+            assert.equals("/books/remote_folder/", mkdir_called)
         end)
     end)
 end)
