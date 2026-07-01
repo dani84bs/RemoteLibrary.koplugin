@@ -165,6 +165,356 @@ describe("RemoteLibrary plugin", function()
         assert.match("fiction", written_content)
     end)
 
+    it("does not attempt the WebDAV deep-scan fast path when address is not set", function()
+        local UIManager = require("ui/uimanager")
+        local original_show = UIManager.show
+        local original_nextTick = UIManager.nextTick
+
+        UIManager.show = function(self, widget) end
+        UIManager.nextTick = function(self, callback) callback() end
+
+        package.loaded["ui/widget/progressbardialog"] = {
+            new = function(self, args)
+                return {
+                    [1] = { { { setText = function() end } } },
+                    redrawProgressbar = function() end,
+                    show = function() end,
+                    close = function() end,
+                }
+            end
+        }
+
+        local original_http = package.loaded["socket.http"]
+        local http_request_called = false
+        package.loaded["socket.http"] = {
+            request = function(req)
+                http_request_called = true
+                return 1, 500, {}, "should not be called"
+            end
+        }
+
+        local original_io_open = io.open
+        io.open = function(path, mode)
+            if path:match("remotelibrary_map.lua") and mode == "w" then
+                return { write = function() end, close = function() end }
+            end
+            return original_io_open(path, mode)
+        end
+
+        package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+        local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+        local list_folder_calls = 0
+        local mock_instance = setmetatable({
+            ui = {
+                cloudstorage = {
+                    getProviders = function() end,
+                    loadSettings = function() end,
+                    providers = {
+                        webdav = {
+                            run = function(callback) callback() end,
+                            listFolder = function(url, include_folders)
+                                list_folder_calls = list_folder_calls + 1
+                                return {}
+                            end
+                        }
+                    }
+                }
+            },
+            settings = {
+                readSetting = function(self, key)
+                    if key == "cloudstorage_dir" then
+                        -- no `address` field, mirroring the existing mock config
+                        return { type = "webdav", url = "/books" }
+                    end
+                end
+            },
+            loadSettings = function() end
+        }, { __index = RemoteLibrary })
+
+        mock_instance:reloadRemoteLibrary()
+
+        UIManager.show = original_show
+        UIManager.nextTick = original_nextTick
+        io.open = original_io_open
+        package.loaded["socket.http"] = original_http
+
+        assert.is_false(http_request_called)
+        assert.equals(1, list_folder_calls)
+    end)
+
+    it("uses a single Depth:infinity PROPFIND request when address is configured", function()
+        local UIManager = require("ui/uimanager")
+        local original_show = UIManager.show
+        local original_nextTick = UIManager.nextTick
+
+        local shown_infomsg = nil
+        UIManager.show = function(self, widget)
+            if widget.text then
+                shown_infomsg = widget.text
+            end
+        end
+        UIManager.nextTick = function(self, callback) callback() end
+
+        package.loaded["ui/widget/progressbardialog"] = {
+            new = function(self, args)
+                return {
+                    [1] = { { { setText = function() end } } },
+                    redrawProgressbar = function() end,
+                    show = function() end,
+                    close = function() end,
+                }
+            end
+        }
+
+        local written_content = nil
+        local original_io_open = io.open
+        io.open = function(path, mode)
+            if path:match("remotelibrary_map.lua") and mode == "w" then
+                return {
+                    write = function(self, content) written_content = content end,
+                    close = function() end,
+                }
+            end
+            return original_io_open(path, mode)
+        end
+
+        local original_http = package.loaded["socket.http"]
+        local http_request_calls = 0
+        package.loaded["socket.http"] = {
+            request = function(req)
+                http_request_calls = http_request_calls + 1
+                local body = table.concat({
+                    [[<?xml version="1.0"?><d:multistatus xmlns:d="DAV:">]],
+                    [[<d:response><d:href>/dav/books/</d:href><d:propstat><d:prop>]],
+                    [[<d:resourcetype><d:collection/></d:resourcetype></d:prop></d:propstat></d:response>]],
+                    [[<d:response><d:href>/dav/books/book1.epub</d:href><d:propstat><d:prop>]],
+                    [[<d:resourcetype/><d:getcontentlength>1024</d:getcontentlength></d:prop></d:propstat></d:response>]],
+                    [[<d:response><d:href>/dav/books/fiction/</d:href><d:propstat><d:prop>]],
+                    [[<d:resourcetype><d:collection/></d:resourcetype></d:prop></d:propstat></d:response>]],
+                    [[<d:response><d:href>/dav/books/fiction/book2.epub</d:href><d:propstat><d:prop>]],
+                    [[<d:resourcetype/><d:getcontentlength>2048</d:getcontentlength></d:prop></d:propstat></d:response>]],
+                    [[</d:multistatus>]],
+                })
+                req.sink(body)
+                req.sink(nil)
+                return 1, 207, { ["content-type"] = "application/xml" }, "HTTP/1.1 207 Multi-Status"
+            end
+        }
+
+        package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+        local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+        local list_folder_calls = 0
+        local mock_instance = setmetatable({
+            ui = {
+                cloudstorage = {
+                    getProviders = function() end,
+                    loadSettings = function() end,
+                    providers = {
+                        webdav = {
+                            run = function(callback) callback() end,
+                            listFolder = function(url, include_folders)
+                                list_folder_calls = list_folder_calls + 1
+                                return {}
+                            end
+                        }
+                    }
+                }
+            },
+            settings = {
+                readSetting = function(self, key)
+                    if key == "cloudstorage_dir" then
+                        return { type = "webdav", url = "/books", address = "https://example.com/dav" }
+                    end
+                end
+            },
+            loadSettings = function() end
+        }, { __index = RemoteLibrary })
+
+        mock_instance:reloadRemoteLibrary()
+
+        UIManager.show = original_show
+        UIManager.nextTick = original_nextTick
+        io.open = original_io_open
+        package.loaded["socket.http"] = original_http
+
+        assert.equals(1, http_request_calls)
+        assert.equals(0, list_folder_calls)
+        assert.match("Reload complete: 1 folders and 2 files mapped.", shown_infomsg)
+        assert.is_string(written_content)
+        assert.match("book1.epub", written_content)
+        assert.match("book2.epub", written_content)
+        assert.match("fiction", written_content)
+    end)
+
+    it("falls back to the per-folder crawl when the PROPFIND deep-scan fails", function()
+        local UIManager = require("ui/uimanager")
+        local original_show = UIManager.show
+        local original_nextTick = UIManager.nextTick
+
+        local shown_infomsg = nil
+        UIManager.show = function(self, widget)
+            if widget.text then
+                shown_infomsg = widget.text
+            end
+        end
+        UIManager.nextTick = function(self, callback) callback() end
+
+        package.loaded["ui/widget/progressbardialog"] = {
+            new = function(self, args)
+                return {
+                    [1] = { { { setText = function() end } } },
+                    redrawProgressbar = function() end,
+                    show = function() end,
+                    close = function() end,
+                }
+            end
+        }
+
+        local original_io_open = io.open
+        io.open = function(path, mode)
+            if path:match("remotelibrary_map.lua") and mode == "w" then
+                return { write = function() end, close = function() end }
+            end
+            return original_io_open(path, mode)
+        end
+
+        local original_http = package.loaded["socket.http"]
+        package.loaded["socket.http"] = {
+            request = function(req)
+                -- server rejects Depth: infinity
+                return 1, 403, {}, "HTTP/1.1 403 Forbidden"
+            end
+        }
+
+        package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+        local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+        local list_folder_calls = 0
+        local mock_instance = setmetatable({
+            ui = {
+                cloudstorage = {
+                    getProviders = function() end,
+                    loadSettings = function() end,
+                    providers = {
+                        webdav = {
+                            run = function(callback) callback() end,
+                            listFolder = function(url, include_folders)
+                                list_folder_calls = list_folder_calls + 1
+                                return {}
+                            end
+                        }
+                    }
+                }
+            },
+            settings = {
+                readSetting = function(self, key)
+                    if key == "cloudstorage_dir" then
+                        return { type = "webdav", url = "/books", address = "https://example.com/dav" }
+                    end
+                end
+            },
+            loadSettings = function() end
+        }, { __index = RemoteLibrary })
+
+        mock_instance:reloadRemoteLibrary()
+
+        UIManager.show = original_show
+        UIManager.nextTick = original_nextTick
+        io.open = original_io_open
+        package.loaded["socket.http"] = original_http
+
+        assert.equals(1, list_folder_calls)
+        assert.match("Reload complete: 0 folders and 0 files mapped.", shown_infomsg)
+    end)
+
+    it("saves partial progress and shows a message when reload is cancelled mid-scan", function()
+        local UIManager = require("ui/uimanager")
+        local original_show = UIManager.show
+        local original_nextTick = UIManager.nextTick
+
+        local shown_infomsg = nil
+        UIManager.show = function(self, widget)
+            if widget.text then
+                shown_infomsg = widget.text
+            end
+        end
+        UIManager.nextTick = function(self, callback) callback() end
+
+        local captured_dismiss_callback = nil
+        package.loaded["ui/widget/progressbardialog"] = {
+            new = function(self, args)
+                captured_dismiss_callback = args.dismiss_callback
+                return {
+                    [1] = { { { setText = function() end } } },
+                    redrawProgressbar = function() end,
+                    show = function() end,
+                    close = function() end,
+                }
+            end
+        }
+
+        local written_content = nil
+        local original_io_open = io.open
+        io.open = function(path, mode)
+            if path:match("remotelibrary_map.lua") and mode == "w" then
+                return {
+                    write = function(self, content) written_content = content end,
+                    close = function() end,
+                }
+            end
+            return original_io_open(path, mode)
+        end
+
+        package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+        local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+        local mock_instance = setmetatable({
+            ui = {
+                cloudstorage = {
+                    getProviders = function() end,
+                    loadSettings = function() end,
+                    providers = {
+                        webdav = {
+                            run = function(callback) callback() end,
+                            listFolder = function(url, include_folders)
+                                if url == "/books" then
+                                    -- simulate the user cancelling right after the first folder is fetched
+                                    captured_dismiss_callback()
+                                    return {
+                                        { text = "book1.epub", is_file = true, url = "/books/book1.epub", filesize = 1024 },
+                                        { text = "fiction", is_folder = true, url = "/books/fiction" }
+                                    }
+                                end
+                                return {}
+                            end
+                        }
+                    }
+                }
+            },
+            settings = {
+                readSetting = function(self, key)
+                    if key == "cloudstorage_dir" then
+                        -- no `address` field, so this exercises the per-folder crawl
+                        return { type = "webdav", url = "/books" }
+                    end
+                end
+            },
+            loadSettings = function() end
+        }, { __index = RemoteLibrary })
+
+        mock_instance:reloadRemoteLibrary()
+
+        UIManager.show = original_show
+        UIManager.nextTick = original_nextTick
+        io.open = original_io_open
+
+        assert.match("Reload cancelled: 1 folders and 1 files mapped so far.", shown_infomsg)
+        assert.is_string(written_content)
+        assert.match("book1.epub", written_content)
+    end)
+
     it("can retrieve settings sub-menu items dynamically when configured", function()
         local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
         local mock_instance = setmetatable({
