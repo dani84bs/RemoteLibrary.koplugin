@@ -23,20 +23,8 @@ describe("RemoteLibrary e2e", function()
     end)
 
     it("scans the real WebDAV server and overlays a [Cloud] proxy file", function()
-        local reload_message
-        local original_show = UIManager.show
-        UIManager.show = function(self, widget)
-            if widget.text then reload_message = widget.text end
-            return original_show(self, widget)
-        end
+        local reload_message = support.reloadAndCapture(remotelibrary, UIManager)
 
-        remotelibrary:reloadRemoteLibrary()
-        local settled = support.settleUntil(function()
-            return reload_message and reload_message:match("^Reload") ~= nil
-        end)
-        UIManager.show = original_show
-
-        assert.is_true(settled)
         assert.matches("Reload complete: %d+ folders and %d+ files mapped%.", reload_message)
 
         local items = filemanager.file_chooser:genItemTableFromPath(root_path)

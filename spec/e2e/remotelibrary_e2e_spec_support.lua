@@ -1,3 +1,6 @@
+package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
+local spec_support = require("remotelibrary_spec_support")
+
 local M = {}
 
 -- Distinct from the shared server (18109) and the dead-port fixture some
@@ -97,6 +100,27 @@ function M.settleUntil(predicate, max_iterations)
         UIManager:handleInput()
     end
     return predicate()
+end
+
+-- Runs remotelibrary:reloadRemoteLibrary(), capturing the InfoMessage text
+-- it ends on (e.g. "Reload complete: ..."), via the same patch/restore
+-- convention spec/unit uses (spec_support.patch), forwarding to the real
+-- UIManager.show so the FileManager the e2e specs drive stays live.
+function M.reloadAndCapture(remotelibrary, UIManager)
+    local message
+    local original_show = UIManager.show
+    local restore_show = spec_support.patch(UIManager, "show", function(self, widget)
+        if widget.text then message = widget.text end
+        return original_show(self, widget)
+    end)
+
+    remotelibrary:reloadRemoteLibrary()
+    M.settleUntil(function()
+        return message and message:match("^Reload") ~= nil
+    end)
+    restore_show()
+
+    return message
 end
 
 -- Finds the [Cloud]-prefixed proxy entry for name in a FileChooser item
