@@ -1002,6 +1002,85 @@ return {
             assert.is_nil(dialog_shown)
         end)
 
+        it("blocks onFileSelect for proxy file in select mode", function()
+            local spec_support = require("remotelibrary_spec_support")
+            local UIManager = require("ui/uimanager")
+
+            local dialog_shown = nil
+            local restore_show = spec_support.patch(UIManager, "show", function(self, widget)
+                dialog_shown = widget
+            end)
+
+            package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+            local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+            local mock_fc = {
+                path = "/books",
+                getList = function() return {}, {} end,
+                getMenuItemMandatory = function() return "" end,
+                changeToPath = function() end,
+                onFileSelect = function() end,
+                showFileDialog = function() end,
+                ui = { selected_files = { ["/books/book.epub"] = true } },
+            }
+            local download_called = false
+            local plugin_instance = spec_support.mockInstance(RemoteLibrary, {
+                ui = { menu = { registerToMainMenu = function() end } },
+                settings = { readSetting = function() return nil end },
+                loadSettings = function() end,
+                downloadAndOpenFile = function() download_called = true end
+            })
+
+            plugin_instance:hookFileChooser(mock_fc)
+
+            local proxy_item = { is_proxy = true, is_file = true, text = "[Cloud] book.epub" }
+            local res = mock_fc:onFileSelect(proxy_item)
+
+            restore_show()
+
+            assert.is_true(res)
+            assert.is_false(download_called)
+            assert.is_not_nil(dialog_shown)
+            assert.equals(
+                "Operations on remote proxy files are not supported in select mode.",
+                dialog_shown.text
+            )
+        end)
+
+        it("does not intercept showFileDialog for a non-proxy file", function()
+            local spec_support = require("remotelibrary_spec_support")
+
+            package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+            local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+            local original_showFileDialog_called = false
+            local mock_fc = {
+                path = "/books",
+                getList = function() return {}, {} end,
+                getMenuItemMandatory = function() return "" end,
+                changeToPath = function() end,
+                onFileSelect = function() end,
+                showFileDialog = function()
+                    original_showFileDialog_called = true
+                    return false
+                end,
+                ui = {},
+            }
+            local plugin_instance = spec_support.mockInstance(RemoteLibrary, {
+                ui = { menu = { registerToMainMenu = function() end } },
+                settings = { readSetting = function() return nil end },
+                loadSettings = function() end
+            })
+
+            plugin_instance:hookFileChooser(mock_fc)
+
+            local local_item = { is_proxy = false, is_file = true, text = "book.epub" }
+            local res = mock_fc:showFileDialog(local_item)
+
+            assert.is_true(original_showFileDialog_called)
+            assert.is_false(res)
+        end)
+
         it("patches lfs.dir and lfs.attributes globally and maps virtual files/folders", function()
             local lfs = require("libs/libkoreader-lfs")
 
