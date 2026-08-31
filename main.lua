@@ -795,6 +795,7 @@ function RemoteLibrary:downloadRemoteFile(item, callback)
             end
             if callback then callback(true) end
         else
+            os.remove(target_path)
             UIManager:show(InfoMessage:new{
                 text = string.format(_("Download failed: %s"), item.text:gsub("^%[Cloud%]%s*", "")),
                 timeout = 3,

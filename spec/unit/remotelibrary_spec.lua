@@ -1018,6 +1018,188 @@ describe("RemoteLibrary plugin", function()
         assert.is_false(open_called)
     end)
 
+    it("shows 'Cloud storage provider not found.' when downloadRemoteFile has a missing/unsupported provider type", function()
+        package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
+        local spec_support = require("remotelibrary_spec_support")
+        local UIManager = require("ui/uimanager")
+
+        local shown_infomsg = nil
+        local restore_show = spec_support.patch(UIManager, "show", function(self, widget)
+            if widget.text then shown_infomsg = widget.text end
+        end)
+
+        local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+        local mock_instance = spec_support.mockInstance(RemoteLibrary, {
+            ui = {
+                cloudstorage = {
+                    getProviders = function() end,
+                    loadSettings = function() end,
+                    providers = {}
+                }
+            },
+            settings = {
+                readSetting = function(self, key)
+                    if key == "cloudstorage_dir" then
+                        return { type = "unsupported_provider", url = "/books" }
+                    end
+                end
+            },
+            loadSettings = function() end
+        })
+
+        local callback_result
+        mock_instance:downloadRemoteFile({ text = "book.epub", path = "/books/book.epub" }, function(success)
+            callback_result = success
+        end)
+
+        restore_show()
+
+        assert.match("Cloud storage provider not found.", shown_infomsg)
+        assert.is_false(callback_result)
+    end)
+
+    it("shows 'Download failed' and removes the partial file when provider.downloadFile returns a non-200 code", function()
+        package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
+        local spec_support = require("remotelibrary_spec_support")
+        local UIManager = require("ui/uimanager")
+        local DataStorage = require("datastorage")
+
+        local shown_infomsg = nil
+        local restore_show = spec_support.patch(UIManager, "show", function(self, widget)
+            if widget.text then shown_infomsg = widget.text end
+        end)
+
+        local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+        local lfs = require("libs/libkoreader-lfs")
+        local restore_original_attributes = spec_support.patch(lfs, "original_attributes", lfs.attributes)
+
+        local target_path = DataStorage:getSettingsDir() .. "/remotelibrary_test_partial.epub"
+        os.remove(target_path)
+
+        local mock_instance = spec_support.mockInstance(RemoteLibrary, {
+            ui = {
+                cloudstorage = {
+                    getProviders = function() end,
+                    loadSettings = function() end,
+                    providers = {
+                        webdav = {
+                            run = function(callback) callback() end,
+                            downloadFile = function(url, path)
+                                -- simulate a partial write left behind by a failed transfer
+                                local f = io.open(path, "w")
+                                f:write("partial")
+                                f:close()
+                                return 404
+                            end
+                        }
+                    }
+                }
+            },
+            settings = {
+                readSetting = function(self, key)
+                    if key == "cloudstorage_dir" then
+                        return { type = "webdav", url = "/books" }
+                    end
+                end
+            },
+            loadSettings = function() end
+        })
+
+        local callback_result
+        mock_instance:downloadRemoteFile({ text = "book.epub", path = target_path, url = "/book.epub" }, function(success)
+            callback_result = success
+        end)
+
+        restore_show()
+        restore_original_attributes()
+
+        local leftover_exists = lfs.attributes(target_path, "mode") == "file"
+        os.remove(target_path)
+
+        assert.match("Download failed: book.epub", shown_infomsg)
+        assert.is_false(callback_result)
+        assert.is_false(leftover_exists)
+    end)
+
+    it("handles an io.open failure gracefully when saveMap persists the remote library map", function()
+        package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
+        local spec_support = require("remotelibrary_spec_support")
+        local UIManager = require("ui/uimanager")
+        local DataStorage = require("datastorage")
+
+        local shown_infomsg = nil
+        local restore_show = spec_support.patch(UIManager, "show", function(self, widget)
+            if widget.text then shown_infomsg = widget.text end
+        end)
+        local restore_nextTick = spec_support.patch(UIManager, "nextTick", function(self, callback) callback() end)
+
+        local restore_progressbar = spec_support.patch(package.loaded, "ui/widget/progressbardialog", {
+            new = function(self, args)
+                return {
+                    [1] = { { { setText = function() end } } },
+                    redrawProgressbar = function() end,
+                    show = function() end,
+                    close = function() end,
+                }
+            end
+        })
+
+        local map_file_path = DataStorage:getSettingsDir() .. "/remotelibrary_map.lua"
+        local original_io_open = io.open
+        local restore_io_open = spec_support.patch(io, "open", function(path, mode)
+            if path == map_file_path and mode == "w" then
+                return nil
+            end
+            return original_io_open(path, mode)
+        end)
+
+        package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+        local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+        local mock_instance = spec_support.mockInstance(RemoteLibrary, {
+            ui = {
+                cloudstorage = {
+                    getProviders = function() end,
+                    loadSettings = function() end,
+                    providers = {
+                        webdav = {
+                            run = function(callback) callback() end,
+                            listFolder = function(url, include_folders)
+                                if url == "/books" then
+                                    return {
+                                        { text = "book1.epub", is_file = true, url = "/books/book1.epub", filesize = 1024 }
+                                    }
+                                end
+                                return {}
+                            end
+                        }
+                    }
+                }
+            },
+            settings = {
+                readSetting = function(self, key)
+                    if key == "cloudstorage_dir" then
+                        return { type = "webdav", url = "/books" }
+                    end
+                end
+            },
+            loadSettings = function() end
+        })
+
+        assert.has_no.errors(function()
+            mock_instance:reloadRemoteLibrary()
+        end)
+
+        restore_show()
+        restore_nextTick()
+        restore_progressbar()
+        restore_io_open()
+
+        assert.match("Reload complete: 0 folders and 1 files mapped.", shown_infomsg)
+    end)
+
     describe("Map Overlay", function()
         local original_attributes
         local original_realpath
