@@ -429,6 +429,370 @@ describe("RemoteLibrary plugin", function()
         assert.match("Reload complete: 0 folders and 0 files mapped.", shown_infomsg)
     end)
 
+    it("falls back to the per-folder crawl when PROPFIND returns 401", function()
+        package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
+        local spec_support = require("remotelibrary_spec_support")
+        local UIManager = require("ui/uimanager")
+
+        local shown_infomsg = nil
+        local restore_show = spec_support.patch(UIManager, "show", function(self, widget)
+            if widget.text then shown_infomsg = widget.text end
+        end)
+        local restore_nextTick = spec_support.patch(UIManager, "nextTick", function(self, callback) callback() end)
+
+        package.loaded["ui/widget/progressbardialog"] = {
+            new = function(self, args)
+                return {
+                    [1] = { { { setText = function() end } } },
+                    redrawProgressbar = function() end,
+                    show = function() end,
+                    close = function() end,
+                }
+            end
+        }
+
+        local restore_io_open = spec_support.patch(io, "open", function(path, mode)
+            if path:match("remotelibrary_map.lua") and mode == "w" then
+                return { write = function() end, close = function() end }
+            end
+            return nil
+        end)
+
+        local restore_http = spec_support.patch(package.loaded, "socket.http", {
+            request = function(req)
+                return 1, 401, {}, "HTTP/1.1 401 Unauthorized"
+            end
+        })
+
+        package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+        local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+        local list_folder_calls = 0
+        local mock_instance = spec_support.mockInstance(RemoteLibrary, {
+            ui = {
+                cloudstorage = {
+                    getProviders = function() end,
+                    loadSettings = function() end,
+                    providers = {
+                        webdav = {
+                            run = function(callback) callback() end,
+                            listFolder = function(url, include_folders)
+                                list_folder_calls = list_folder_calls + 1
+                                return {}
+                            end
+                        }
+                    }
+                }
+            },
+            settings = {
+                readSetting = function(self, key)
+                    if key == "cloudstorage_dir" then
+                        return { type = "webdav", url = "/books", address = "https://example.com/dav" }
+                    end
+                end
+            },
+            loadSettings = function() end
+        })
+
+        mock_instance:reloadRemoteLibrary()
+
+        restore_show()
+        restore_nextTick()
+        restore_io_open()
+        restore_http()
+
+        assert.equals(1, list_folder_calls)
+        assert.match("Reload complete: 0 folders and 0 files mapped.", shown_infomsg)
+    end)
+
+    it("does not add garbage entries when PROPFIND returns unparseable XML", function()
+        package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
+        local spec_support = require("remotelibrary_spec_support")
+        local UIManager = require("ui/uimanager")
+
+        local shown_infomsg = nil
+        local restore_show = spec_support.patch(UIManager, "show", function(self, widget)
+            if widget.text then shown_infomsg = widget.text end
+        end)
+        local restore_nextTick = spec_support.patch(UIManager, "nextTick", function(self, callback) callback() end)
+
+        package.loaded["ui/widget/progressbardialog"] = {
+            new = function(self, args)
+                return {
+                    [1] = { { { setText = function() end } } },
+                    redrawProgressbar = function() end,
+                    show = function() end,
+                    close = function() end,
+                }
+            end
+        }
+
+        local written_content = nil
+        local restore_io_open = spec_support.patch(io, "open", function(path, mode)
+            if path:match("remotelibrary_map.lua") and mode == "w" then
+                return {
+                    write = function(self, content) written_content = content end,
+                    close = function() end,
+                }
+            end
+            return nil
+        end)
+
+        local restore_http = spec_support.patch(package.loaded, "socket.http", {
+            request = function(req)
+                req.sink("this is not xml at all, just garbage <<< >>>")
+                req.sink(nil)
+                return 1, 207, { ["content-type"] = "application/xml" }, "HTTP/1.1 207 Multi-Status"
+            end
+        })
+
+        package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+        local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+        local list_folder_calls = 0
+        local mock_instance = spec_support.mockInstance(RemoteLibrary, {
+            ui = {
+                cloudstorage = {
+                    getProviders = function() end,
+                    loadSettings = function() end,
+                    providers = {
+                        webdav = {
+                            run = function(callback) callback() end,
+                            listFolder = function(url, include_folders)
+                                list_folder_calls = list_folder_calls + 1
+                                return {}
+                            end
+                        }
+                    }
+                }
+            },
+            settings = {
+                readSetting = function(self, key)
+                    if key == "cloudstorage_dir" then
+                        return { type = "webdav", url = "/books", address = "https://example.com/dav" }
+                    end
+                end
+            },
+            loadSettings = function() end
+        })
+
+        mock_instance:reloadRemoteLibrary()
+
+        restore_show()
+        restore_nextTick()
+        restore_io_open()
+        restore_http()
+
+        -- Malformed XML that doesn't match the expected response pattern yields no
+        -- entries, so the deep-scan "succeeds" with an empty tree rather than crashing.
+        assert.equals(0, list_folder_calls)
+        assert.match("Reload complete: 0 folders and 0 files mapped.", shown_infomsg)
+        assert.is_string(written_content)
+        assert.not_match("book1.epub", written_content)
+    end)
+
+    it("falls back to the per-folder crawl when the PROPFIND request itself fails", function()
+        package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
+        local spec_support = require("remotelibrary_spec_support")
+        local UIManager = require("ui/uimanager")
+
+        local shown_infomsg = nil
+        local restore_show = spec_support.patch(UIManager, "show", function(self, widget)
+            if widget.text then shown_infomsg = widget.text end
+        end)
+        local restore_nextTick = spec_support.patch(UIManager, "nextTick", function(self, callback) callback() end)
+
+        package.loaded["ui/widget/progressbardialog"] = {
+            new = function(self, args)
+                return {
+                    [1] = { { { setText = function() end } } },
+                    redrawProgressbar = function() end,
+                    show = function() end,
+                    close = function() end,
+                }
+            end
+        }
+
+        local restore_io_open = spec_support.patch(io, "open", function(path, mode)
+            if path:match("remotelibrary_map.lua") and mode == "w" then
+                return { write = function() end, close = function() end }
+            end
+            return nil
+        end)
+
+        local restore_http = spec_support.patch(package.loaded, "socket.http", {
+            request = function(req)
+                error("connection timed out")
+            end
+        })
+
+        package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+        local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+        local list_folder_calls = 0
+        local mock_instance = spec_support.mockInstance(RemoteLibrary, {
+            ui = {
+                cloudstorage = {
+                    getProviders = function() end,
+                    loadSettings = function() end,
+                    providers = {
+                        webdav = {
+                            run = function(callback) callback() end,
+                            listFolder = function(url, include_folders)
+                                list_folder_calls = list_folder_calls + 1
+                                return {}
+                            end
+                        }
+                    }
+                }
+            },
+            settings = {
+                readSetting = function(self, key)
+                    if key == "cloudstorage_dir" then
+                        return { type = "webdav", url = "/books", address = "https://example.com/dav" }
+                    end
+                end
+            },
+            loadSettings = function() end
+        })
+
+        mock_instance:reloadRemoteLibrary()
+
+        restore_show()
+        restore_nextTick()
+        restore_io_open()
+        restore_http()
+
+        assert.equals(1, list_folder_calls)
+        assert.match("Reload complete: 0 folders and 0 files mapped.", shown_infomsg)
+    end)
+
+    it("continues the per-folder crawl when listFolder fails for one folder", function()
+        package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
+        local spec_support = require("remotelibrary_spec_support")
+        local UIManager = require("ui/uimanager")
+
+        local shown_infomsg = nil
+        local restore_show = spec_support.patch(UIManager, "show", function(self, widget)
+            if widget.text then shown_infomsg = widget.text end
+        end)
+        local restore_nextTick = spec_support.patch(UIManager, "nextTick", function(self, callback) callback() end)
+
+        package.loaded["ui/widget/progressbardialog"] = {
+            new = function(self, args)
+                return {
+                    [1] = { { { setText = function() end } } },
+                    redrawProgressbar = function() end,
+                    show = function() end,
+                    close = function() end,
+                }
+            end
+        }
+
+        local written_content = nil
+        local restore_io_open = spec_support.patch(io, "open", function(path, mode)
+            if path:match("remotelibrary_map.lua") and mode == "w" then
+                return {
+                    write = function(self, content) written_content = content end,
+                    close = function() end,
+                }
+            end
+            return nil
+        end)
+
+        package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+        local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+        local list_folder_calls = 0
+        local mock_instance = spec_support.mockInstance(RemoteLibrary, {
+            ui = {
+                cloudstorage = {
+                    getProviders = function() end,
+                    loadSettings = function() end,
+                    providers = {
+                        webdav = {
+                            run = function(callback) callback() end,
+                            listFolder = function(url, include_folders)
+                                list_folder_calls = list_folder_calls + 1
+                                if url == "/books" then
+                                    return {
+                                        { text = "broken", is_folder = true, url = "/books/broken" },
+                                        { text = "fiction", is_folder = true, url = "/books/fiction" }
+                                    }
+                                elseif url == "/books/broken" then
+                                    -- fails outright (e.g. timeout), returns nil
+                                    return nil
+                                elseif url == "/books/fiction" then
+                                    return {
+                                        { text = "book2.epub", is_file = true, url = "/books/fiction/book2.epub", filesize = 2048 }
+                                    }
+                                end
+                                return {}
+                            end
+                        }
+                    }
+                }
+            },
+            settings = {
+                readSetting = function(self, key)
+                    if key == "cloudstorage_dir" then
+                        return { type = "webdav", url = "/books" }
+                    end
+                end
+            },
+            loadSettings = function() end
+        })
+
+        mock_instance:reloadRemoteLibrary()
+
+        restore_show()
+        restore_nextTick()
+        restore_io_open()
+
+        assert.equals(3, list_folder_calls)
+        assert.match("Reload complete: 2 folders and 1 files mapped.", shown_infomsg)
+        assert.is_string(written_content)
+        assert.match("book2.epub", written_content)
+    end)
+
+    it("shows 'Cloud storage provider not found.' for a missing/unsupported provider type", function()
+        package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
+        local spec_support = require("remotelibrary_spec_support")
+        local UIManager = require("ui/uimanager")
+
+        local shown_infomsg = nil
+        local restore_show = spec_support.patch(UIManager, "show", function(self, widget)
+            if widget.text then shown_infomsg = widget.text end
+        end)
+
+        package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+        local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+        local mock_instance = spec_support.mockInstance(RemoteLibrary, {
+            ui = {
+                cloudstorage = {
+                    getProviders = function() end,
+                    loadSettings = function() end,
+                    providers = {}
+                }
+            },
+            settings = {
+                readSetting = function(self, key)
+                    if key == "cloudstorage_dir" then
+                        return { type = "unsupported_provider", url = "/books" }
+                    end
+                end
+            },
+            loadSettings = function() end
+        })
+
+        mock_instance:reloadRemoteLibrary()
+
+        restore_show()
+
+        assert.match("Cloud storage provider not found.", shown_infomsg)
+    end)
+
     it("saves partial progress and shows a message when reload is cancelled mid-scan", function()
         local UIManager = require("ui/uimanager")
         local original_show = UIManager.show
