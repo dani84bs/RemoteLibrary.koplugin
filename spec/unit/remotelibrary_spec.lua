@@ -579,6 +579,81 @@ describe("RemoteLibrary plugin", function()
         assert.match("Cloudstorage directory: not set", sub_items[1].text)
     end)
 
+    it("flushes settings only when the updated flag is set", function()
+        package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
+        local spec_support = require("remotelibrary_spec_support")
+        local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+        local flush_called = false
+        local mock_instance = spec_support.mockInstance(RemoteLibrary, {
+            updated = true,
+            settings = { flush = function() flush_called = true end }
+        })
+
+        mock_instance:onFlushSettings()
+        assert.is_true(flush_called)
+        assert.is_nil(mock_instance.updated)
+
+        flush_called = false
+        mock_instance:onFlushSettings()
+        assert.is_false(flush_called)
+    end)
+
+    it("invokes downloadRemoteFile and opens the file on success", function()
+        package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
+        local spec_support = require("remotelibrary_spec_support")
+        local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+        local filemanagerutil = require("apps/filemanager/filemanagerutil")
+        local opened_ui, opened_path
+        local restore_openFile = spec_support.patch(filemanagerutil, "openFile", function(ui, path)
+            opened_ui, opened_path = ui, path
+        end)
+
+        local download_called_with
+        local mock_instance = spec_support.mockInstance(RemoteLibrary, {
+            ui = { fake_ui = true },
+            downloadRemoteFile = function(self, item, callback)
+                download_called_with = item
+                callback(true)
+            end
+        })
+
+        local item = { path = "/books/remote_book.epub", text = "[Cloud] remote_book.epub" }
+        mock_instance:downloadAndOpenFile(item)
+
+        restore_openFile()
+
+        assert.equals(item, download_called_with)
+        assert.equals(mock_instance.ui, opened_ui)
+        assert.equals("/books/remote_book.epub", opened_path)
+    end)
+
+    it("does not open the file when downloadRemoteFile reports failure", function()
+        package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
+        local spec_support = require("remotelibrary_spec_support")
+        local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+        local filemanagerutil = require("apps/filemanager/filemanagerutil")
+        local open_called = false
+        local restore_openFile = spec_support.patch(filemanagerutil, "openFile", function()
+            open_called = true
+        end)
+
+        local mock_instance = spec_support.mockInstance(RemoteLibrary, {
+            ui = { fake_ui = true },
+            downloadRemoteFile = function(self, item, callback)
+                callback(false)
+            end
+        })
+
+        mock_instance:downloadAndOpenFile({ path = "/books/remote_book.epub" })
+
+        restore_openFile()
+
+        assert.is_false(open_called)
+    end)
+
     describe("Map Overlay", function()
         local original_attributes
         local original_realpath
@@ -1192,6 +1267,58 @@ return {
             lfs.mkdir = original_mkdir
 
             assert.equals("/books/remote_folder/", mkdir_called)
+        end)
+
+        it("patches BookInfo:getDocProps to intercept proxy files", function()
+            package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
+            local spec_support = require("remotelibrary_spec_support")
+
+            local BookInfo = require("apps/filemanager/filemanagerbookinfo")
+            local original_getDocProps = BookInfo.getDocProps
+            local restore_flag = spec_support.patch(BookInfo, "_remotelibrary_patched", nil)
+
+            package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+            local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+            local plugin_instance = spec_support.mockInstance(RemoteLibrary, {
+                ui = { menu = { registerToMainMenu = function() end } },
+                settings = { readSetting = function() return nil end },
+                loadSettings = function() end
+            })
+
+            plugin_instance:init()
+            local props = BookInfo.getDocProps(nil, "/books/remote_book.epub")
+
+            BookInfo.getDocProps = original_getDocProps
+            restore_flag()
+
+            assert.is_table(props)
+            assert.equals("remote_book", props.display_title)
+        end)
+
+        it("patches BookInfoManager:getDocProps to intercept proxy files", function()
+            package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
+            local spec_support = require("remotelibrary_spec_support")
+
+            local BookInfoManager = require("bookinfomanager")
+            local original_getDocProps = BookInfoManager.getDocProps
+            local restore_flag = spec_support.patch(BookInfoManager, "_remotelibrary_patched", nil)
+
+            package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+            local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+            local plugin_instance = spec_support.mockInstance(RemoteLibrary, {
+                ui = { menu = { registerToMainMenu = function() end } },
+                settings = { readSetting = function() return nil end },
+                loadSettings = function() end
+            })
+
+            plugin_instance:init()
+            local props = BookInfoManager:getDocProps("/books/remote_book.epub")
+
+            BookInfoManager.getDocProps = original_getDocProps
+            restore_flag()
+
+            assert.is_table(props)
+            assert.equals("remote_book", props.display_title)
         end)
     end)
 end)
