@@ -537,6 +537,28 @@ describe("RemoteLibrary plugin", function()
         assert.match("Cloudstorage directory: MyWebDAV: /books", sub_items[1].text)
     end)
 
+    it("can retrieve settings sub-menu items dynamically when configured (via spec_support)", function()
+        package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
+        local spec_support = require("remotelibrary_spec_support")
+        local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+        local mock_instance = spec_support.mockInstance(RemoteLibrary, {
+            ui = { menu = {} },
+            settings = {
+                readSetting = function(self, key)
+                    if key == "cloudstorage_dir" then
+                        return { name = "MyWebDAV", url = "/books" }
+                    end
+                end
+            },
+            loadSettings = function() end
+        })
+
+        local sub_items = mock_instance:getSettingsSubMenuItems()
+        assert.is_table(sub_items)
+        assert.equals(1, #sub_items)
+        assert.match("Cloudstorage directory: MyWebDAV: /books", sub_items[1].text)
+    end)
+
     it("shows 'not set' when cloudstorage directory is not configured", function()
         local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
         local mock_instance = setmetatable({
