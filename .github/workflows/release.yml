@@ -1,0 +1,52 @@
+name: Manual Plugin Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract version
+        id: get_version
+        run: |
+          VERSION=$(sed -n 's/.*version = "\(.*\)".*/\1/p' _meta.lua)
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Assemble plugin directory
+        run: |
+          mkdir RemoteLibrary.koplugin
+          # Use rsync style or just copy all and remove.
+          # Since it is a fresh checkout, we copy everything.
+          cp -r . RemoteLibrary.koplugin/ || true
+
+          # Remove excluded folders
+          rm -rf RemoteLibrary.koplugin/.git
+          rm -rf RemoteLibrary.koplugin/.github
+          rm -rf RemoteLibrary.koplugin/spec
+
+          # Remove excluded files
+          rm -f RemoteLibrary.koplugin/run_tests.sh
+          rm -f RemoteLibrary.koplugin/run_e2e_tests.sh
+
+          # Remove the staging directory itself from within itself if cp copied it
+          rm -rf RemoteLibrary.koplugin/RemoteLibrary.koplugin
+
+      - name: Zip plugin
+        run: |
+          zip -r RemoteLibrary.koplugin.zip RemoteLibrary.koplugin
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.VERSION }}
+          name: Release ${{ env.VERSION }}
+          draft: true
+          files: RemoteLibrary.koplugin.zip

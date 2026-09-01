@@ -1,0 +1,115 @@
+name: RemoteLibrary Plugin Tests
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test:
+    name: "Run RemoteLibrary Integration Tests"
+    runs-on: ubuntu-latest
+    container:
+      image: koreader/kobase:0.5.3-22.04
+
+    env:
+      KODEBUG: "1"
+      MAKEFLAGS: OUTPUT_DIR=build PARALLEL_JOBS=4 INSTALL_DIR=install
+      EMULATE_READER: "1"
+
+    steps:
+      - name: Checkout KOReader Core
+        uses: actions/checkout@v4
+        with:
+          repository: koreader/koreader
+          path: koreader_core
+          ref: v2026.07.2
+          fetch-depth: 1
+          submodules: false
+
+      - name: Checkout RemoteLibrary Plugin
+        uses: actions/checkout@v4
+        with:
+          path: koreader_core/plugins/RemoteLibrary.koplugin
+
+      - name: Submodule Status (Diagnostic)
+        run: |
+          cd koreader_core
+          git submodule status --recursive
+
+      - name: Install SDL3 Build Dependencies
+        run: |
+          # The kobase image might be missing newer SDL3 dependencies
+          # We update apt and install the required X11 and Wayland dev libraries
+          # We also install other common SDL3 deps suggested by SDL3 README
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev libxext-dev libxcursor-dev libxinerama-dev libxi-dev \
+            libxrandr-dev libxss-dev libxtst-dev libwayland-dev libxkbcommon-dev \
+            libdrm-dev libgbm-dev libgl1-mesa-dev libgles2-mesa-dev libegl1-mesa-dev \
+            libdbus-1-dev libudev-dev \
+            libasound2-dev libpulse-dev
+
+      - name: Generate Cache Key
+        run: |
+          cd koreader_core
+          make TARGET= cache-key
+
+      - name: Cache Thirdparty
+        uses: actions/cache@v4
+        with:
+          path: koreader_core/base/thirdparty
+          key: ${{ runner.os }}-thirdparty-${{ hashFiles('koreader_core/cache-key') }}
+          restore-keys: |
+            ${{ runner.os }}-thirdparty-
+
+      - name: Cache Build Directory
+        uses: actions/cache@v4
+        with:
+          path: koreader_core/build
+          key: ${{ runner.os }}-build-${{ hashFiles('koreader_core/cache-key') }}
+          restore-keys: |
+            ${{ runner.os }}-build-
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ${{ runner.os }}-ccache-${{ hashFiles('koreader_core/cache-key') }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-
+
+      - name: Fetch Thirdparty
+        run: |
+          cd koreader_core
+          git config --global --add safe.directory /__w/RemoteLibrary/RemoteLibrary/koreader_core
+          make fetchthirdparty
+
+      - name: Build Base (Needed for tests)
+        run: |
+          cd koreader_core
+          # Ensure submodules are recursively updated to match the core commit
+          git submodule update --init --recursive base
+          # Use --assume-old=base if we have a cached build to avoid unnecessary rebuilds
+          if [ -d build ]; then
+            make base --assume-old=base
+          else
+            make base
+          fi
+
+      - name: Run RemoteLibrary Tests
+        run: |
+          cd koreader_core/plugins/RemoteLibrary.koplugin
+          ./run_tests.sh ../..
