@@ -155,6 +155,129 @@ describe("RemoteLibrary plugin", function()
         assert.match("book1.epub", written_content)
     end)
 
+    it("calls fc:refreshPath() after a successful reload when a FileChooser is hooked", function()
+        package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
+        local spec_support = require("remotelibrary_spec_support")
+        local UIManager = require("ui/uimanager")
+        local Scanner = require("scanner")
+
+        local restore_show = spec_support.patch(UIManager, "show", function() end)
+        local restore_nextTick = spec_support.patch(UIManager, "nextTick", function(self, callback) callback() end)
+
+        local restore_progressbar = spec_support.patch(package.loaded, "ui/widget/progressbardialog", {
+            new = function(self, args)
+                return {
+                    [1] = { { { setText = function() end } } },
+                    redrawProgressbar = function() end,
+                    show = function() end,
+                    close = function() end,
+                }
+            end
+        })
+
+        local restore_io_open = spec_support.patch(io, "open", function(path, mode)
+            if path:match("remotelibrary_map.lua") and mode == "w" then
+                return { write = function(self, content) end, close = function() end }
+            end
+            return nil
+        end)
+
+        local restore_scan = spec_support.patch(Scanner, "scan", function(provider, cloudstorage_dir, callbacks, should_cancel)
+            callbacks.on_done({ files = {}, folders = {} }, 0, 0, false)
+        end)
+
+        package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+        local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+        local refresh_called = false
+        local mock_instance = spec_support.mockInstance(RemoteLibrary, {
+            ui = {
+                cloudstorage = {
+                    getProviders = function() end,
+                    loadSettings = function() end,
+                    providers = { webdav = { run = function() end, listFolder = function() end } }
+                }
+            },
+            settings = {
+                readSetting = function(self, key)
+                    if key == "cloudstorage_dir" then
+                        return { type = "webdav", url = "/books" }
+                    end
+                end
+            },
+            loadSettings = function() end,
+            fc = { refreshPath = function() refresh_called = true end },
+        })
+
+        mock_instance:reloadRemoteLibrary()
+
+        restore_show()
+        restore_nextTick()
+        restore_progressbar()
+        restore_io_open()
+        restore_scan()
+
+        assert.is_true(refresh_called)
+    end)
+
+    it("ignores a second reloadRemoteLibrary call while a scan is already in flight", function()
+        package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
+        local spec_support = require("remotelibrary_spec_support")
+        local UIManager = require("ui/uimanager")
+        local Scanner = require("scanner")
+
+        local restore_show = spec_support.patch(UIManager, "show", function() end)
+        local restore_nextTick = spec_support.patch(UIManager, "nextTick", function(self, callback) callback() end)
+
+        local restore_progressbar = spec_support.patch(package.loaded, "ui/widget/progressbardialog", {
+            new = function(self, args)
+                return {
+                    [1] = { { { setText = function() end } } },
+                    redrawProgressbar = function() end,
+                    show = function() end,
+                    close = function() end,
+                }
+            end
+        })
+
+        local scan_call_count = 0
+        local restore_scan = spec_support.patch(Scanner, "scan", function(provider, cloudstorage_dir, callbacks, should_cancel)
+            scan_call_count = scan_call_count + 1
+            -- Deliberately does not call on_done, simulating a scan still in flight.
+        end)
+
+        package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+        local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+        local mock_instance = spec_support.mockInstance(RemoteLibrary, {
+            ui = {
+                cloudstorage = {
+                    getProviders = function() end,
+                    loadSettings = function() end,
+                    providers = { webdav = { run = function() end, listFolder = function() end } }
+                }
+            },
+            settings = {
+                readSetting = function(self, key)
+                    if key == "cloudstorage_dir" then
+                        return { type = "webdav", url = "/books" }
+                    end
+                end
+            },
+            loadSettings = function() end
+        })
+
+        mock_instance:reloadRemoteLibrary()
+        mock_instance:reloadRemoteLibrary()
+
+        restore_show()
+        restore_nextTick()
+        restore_progressbar()
+        restore_scan()
+
+        assert.equals(1, scan_call_count)
+    end)
+
     it("updates the progress dialog text via Scanner's on_progress callback", function()
         package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
         local spec_support = require("remotelibrary_spec_support")
@@ -409,7 +532,7 @@ describe("RemoteLibrary plugin", function()
 
         local sub_items = mock_instance:getSettingsSubMenuItems()
         assert.is_table(sub_items)
-        assert.equals(1, #sub_items)
+        assert.equals(2, #sub_items)
         assert.match("Cloudstorage directory: MyWebDAV: /books", sub_items[1].text)
     end)
 
@@ -431,7 +554,7 @@ describe("RemoteLibrary plugin", function()
 
         local sub_items = mock_instance:getSettingsSubMenuItems()
         assert.is_table(sub_items)
-        assert.equals(1, #sub_items)
+        assert.equals(2, #sub_items)
         assert.match("Cloudstorage directory: MyWebDAV: /books", sub_items[1].text)
     end)
 
@@ -451,8 +574,45 @@ describe("RemoteLibrary plugin", function()
 
         local sub_items = mock_instance:getSettingsSubMenuItems()
         assert.is_table(sub_items)
-        assert.equals(1, #sub_items)
+        assert.equals(2, #sub_items)
         assert.match("Cloudstorage directory: not set", sub_items[1].text)
+    end)
+
+    it("toggles show_refresh_action_entry via the settings submenu checkbox", function()
+        package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
+        local spec_support = require("remotelibrary_spec_support")
+        local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+        local saved_key, saved_value
+        local mock_instance = spec_support.mockInstance(RemoteLibrary, {
+            ui = { menu = {} },
+            settings = {
+                readSetting = function(self, key)
+                    if key == "show_refresh_action_entry" then
+                        return saved_value
+                    end
+                end,
+                saveSetting = function(self, key, value)
+                    saved_key, saved_value = key, value
+                end,
+                flush = function() end,
+            },
+            loadSettings = function() end
+        })
+
+        local sub_items = mock_instance:getSettingsSubMenuItems()
+        local toggle_item = sub_items[2]
+        assert.is_true(toggle_item.checked_func())
+
+        local update_items_called = false
+        local mock_touchmenu = { updateItems = function() update_items_called = true end }
+        toggle_item.callback(mock_touchmenu)
+
+        assert.equals("show_refresh_action_entry", saved_key)
+        assert.is_false(saved_value)
+        assert.is_false(toggle_item.checked_func())
+        assert.is_nil(mock_instance.updated)
+        assert.is_true(update_items_called)
     end)
 
     it("flushes settings only when the updated flag is set", function()
@@ -898,9 +1058,9 @@ return {
             assert.equals("remote_folder/ [Cloud]", dirs[1].text)
             assert.is_true(dirs[1].is_proxy)
 
-            assert.equals(1, #files)
-            assert.equals("remote_book.epub [Cloud]", files[1].text)
-            assert.is_true(files[1].is_proxy)
+            assert.equals(2, #files)
+            assert.equals("remote_book.epub [Cloud]", files[2].text)
+            assert.is_true(files[2].is_proxy)
 
             -- Test nested subdirectory mapping
             local nested_dirs, nested_files = mock_fm.file_chooser:getList("/books/remote_folder", { item_func = function() end })
@@ -984,6 +1144,299 @@ return {
             local dirs, files = mock_fc:getList("/other_path", { item_func = function() end })
             assert.equals(0, #dirs)
             assert.equals(0, #files)
+        end)
+
+        it("pins the [Refresh Cloud] action entry first in fc.getList at home_dir, ahead of real and proxy entries", function()
+            local lfs = require("libs/libkoreader-lfs")
+
+            lfs.attributes = function(path, key)
+                if path:match("remote_book.epub") or path:match("remote_folder") then
+                    return nil
+                end
+                if path:match("/books$") or path:match("/books/remote_folder$") or path:match("collection") then
+                    if key then
+                        if key == "mode" then return "directory" end
+                        if key == "modification" then return 1 end
+                        return nil
+                    end
+                    return { mode = "directory", modification = 1 }
+                end
+                return original_attributes(path, key)
+            end
+
+            package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+            local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+            local mock_ui = {
+                menu = { registerToMainMenu = function() end }
+            }
+            local plugin_instance = setmetatable({
+                ui = mock_ui,
+                settings = {
+                    readSetting = function() return nil end
+                },
+                loadSettings = function() end
+            }, { __index = RemoteLibrary })
+
+            plugin_instance:init()
+
+            local FileManager = require("apps/filemanager/filemanager")
+            local mock_fc = {
+                path = "/books",
+                getList = function(self, path, collate)
+                    return {}, {}
+                end,
+                getMenuItemMandatory = function() return "1 KB" end,
+                changeToPath = function() end,
+                onFileSelect = function() end,
+                showFileDialog = function() end,
+                ui = {},
+            }
+            local mock_fm = {
+                remotelibrary = plugin_instance,
+                file_chooser = mock_fc,
+                folder_shortcuts = {
+                    hasFolderShortcut = function() return false end
+                },
+                registerKeyEvents = function() end,
+            }
+
+            FileManager.setupLayout(mock_fm)
+
+            local dirs, files = mock_fm.file_chooser:getList("/books", { item_func = function() end })
+
+            assert.equals(2, #files)
+            assert.is_true(files[1].is_action)
+            assert.equals("[Refresh Cloud]", files[1].text)
+            assert.equals("remote_book.epub [Cloud]", files[2].text)
+            assert.is_true(files[2].is_proxy)
+        end)
+
+        it("re-pins the action entry to the front after genItemTable sorts the merged listing", function()
+            package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+            local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+            local action_item = { text = "[Refresh Cloud]", is_action = true }
+            local real_item = { text = "aardvark.epub" }
+            local dir_item = { text = "zzz_folder" }
+
+            local mock_fc = {
+                path = "/books",
+                getList = function() return {}, {} end,
+                genItemTable = function(self, dirs, files, path)
+                    -- Simulate the real FileChooser:genItemTable scattering the
+                    -- action entry away from index 1 after collate-sorting.
+                    return { dir_item, real_item, action_item }
+                end,
+                getMenuItemMandatory = function() return "" end,
+                changeToPath = function() end,
+                onFileSelect = function() end,
+                showFileDialog = function() end,
+                ui = {},
+            }
+            local plugin_instance = setmetatable({
+                ui = { menu = { registerToMainMenu = function() end } },
+                settings = { readSetting = function() return nil end },
+                loadSettings = function() end
+            }, { __index = RemoteLibrary })
+
+            plugin_instance:hookFileChooser(mock_fc)
+
+            local item_table = mock_fc:genItemTable({ dir_item }, { real_item, action_item }, "/books")
+
+            assert.equals(action_item, item_table[1])
+        end)
+
+        it("does not re-pin anything at a subfolder path even if an action-flagged item is present", function()
+            package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+            local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+            local real_item = { text = "aardvark.epub" }
+            local action_item = { text = "[Refresh Cloud]", is_action = true }
+
+            local mock_fc = {
+                path = "/books/remote_folder",
+                getList = function() return {}, {} end,
+                genItemTable = function(self, dirs, files, path)
+                    return { real_item, action_item }
+                end,
+                getMenuItemMandatory = function() return "" end,
+                changeToPath = function() end,
+                onFileSelect = function() end,
+                showFileDialog = function() end,
+                ui = {},
+            }
+            local plugin_instance = setmetatable({
+                ui = { menu = { registerToMainMenu = function() end } },
+                settings = { readSetting = function() return nil end },
+                loadSettings = function() end
+            }, { __index = RemoteLibrary })
+
+            plugin_instance:hookFileChooser(mock_fc)
+
+            local item_table = mock_fc:genItemTable({}, { real_item, action_item }, "/books/remote_folder")
+
+            assert.equals(real_item, item_table[1])
+        end)
+
+        it("never includes the action entry at a subfolder path", function()
+            package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+            local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+            local mock_fc = {
+                path = "/books/remote_folder",
+                getList = function() return {}, {} end,
+                getMenuItemMandatory = function() return "" end,
+                changeToPath = function() end,
+                onFileSelect = function() end,
+                showFileDialog = function() end,
+                ui = {},
+            }
+            local plugin_instance = setmetatable({
+                ui = { menu = { registerToMainMenu = function() end } },
+                settings = { readSetting = function() return nil end },
+                loadSettings = function() end
+            }, { __index = RemoteLibrary })
+
+            plugin_instance:hookFileChooser(mock_fc)
+
+            local dirs, files = mock_fc:getList("/books/remote_folder", { item_func = function() end })
+            for _, f in ipairs(files) do
+                assert.is_falsy(f.is_action)
+            end
+        end)
+
+        it("omits the action entry from fc.getList when show_refresh_action_entry is explicitly hidden", function()
+            package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+            local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+            local mock_fc = {
+                path = "/books",
+                getList = function() return {}, {} end,
+                getMenuItemMandatory = function() return "" end,
+                changeToPath = function() end,
+                onFileSelect = function() end,
+                showFileDialog = function() end,
+                ui = {},
+            }
+            local plugin_instance = setmetatable({
+                ui = { menu = { registerToMainMenu = function() end } },
+                settings = {
+                    readSetting = function(self, key)
+                        if key == "show_refresh_action_entry" then return false end
+                    end
+                },
+                loadSettings = function() end
+            }, { __index = RemoteLibrary })
+
+            plugin_instance:hookFileChooser(mock_fc)
+
+            local dirs, files = mock_fc:getList("/books", { item_func = function() end })
+            for _, f in ipairs(files) do
+                assert.is_falsy(f.is_action)
+            end
+        end)
+
+        it("intercepts onFileSelect for the action entry and reloads without ConfirmBox", function()
+            local UIManager = require("ui/uimanager")
+            local original_show = UIManager.show
+            local dialog_shown = nil
+            UIManager.show = function(self, widget)
+                dialog_shown = widget
+            end
+
+            package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+            local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+            local mock_fc = {
+                path = "/books",
+                getList = function() return {}, {} end,
+                getMenuItemMandatory = function() return "" end,
+                changeToPath = function() end,
+                onFileSelect = function() end,
+                showFileDialog = function() end,
+                ui = {},
+            }
+            local reload_called = false
+            local plugin_instance = setmetatable({
+                ui = { menu = { registerToMainMenu = function() end } },
+                settings = { readSetting = function() return nil end },
+                loadSettings = function() end,
+                reloadRemoteLibrary = function() reload_called = true end
+            }, { __index = RemoteLibrary })
+
+            plugin_instance:hookFileChooser(mock_fc)
+
+            local action_item = { is_action = true, is_file = true, text = "[Refresh Cloud]" }
+            local res = mock_fc:onFileSelect(action_item)
+
+            UIManager.show = original_show
+
+            assert.is_true(res)
+            assert.is_true(reload_called)
+            assert.is_nil(dialog_shown)
+        end)
+
+        it("still triggers reload for the action entry when in select mode", function()
+            package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+            local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+            local mock_fc = {
+                path = "/books",
+                getList = function() return {}, {} end,
+                getMenuItemMandatory = function() return "" end,
+                changeToPath = function() end,
+                onFileSelect = function() end,
+                showFileDialog = function() end,
+                ui = { selected_files = { ["/books/book.epub"] = true } },
+            }
+            local reload_called = false
+            local plugin_instance = setmetatable({
+                ui = { menu = { registerToMainMenu = function() end } },
+                settings = { readSetting = function() return nil end },
+                loadSettings = function() end,
+                reloadRemoteLibrary = function() reload_called = true end
+            }, { __index = RemoteLibrary })
+
+            plugin_instance:hookFileChooser(mock_fc)
+
+            local action_item = { is_action = true, is_file = true, text = "[Refresh Cloud]" }
+            local res = mock_fc:onFileSelect(action_item)
+
+            assert.is_true(res)
+            assert.is_true(reload_called)
+        end)
+
+        it("intercepts showFileDialog for the action entry and swallows the context menu", function()
+            package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+            local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+            local original_showFileDialog_called = false
+            local mock_fc = {
+                path = "/books",
+                getList = function() return {}, {} end,
+                getMenuItemMandatory = function() return "" end,
+                changeToPath = function() end,
+                onFileSelect = function() end,
+                showFileDialog = function()
+                    original_showFileDialog_called = true
+                    return false
+                end,
+                ui = {},
+            }
+            local plugin_instance = setmetatable({
+                ui = { menu = { registerToMainMenu = function() end } },
+                settings = { readSetting = function() return nil end },
+                loadSettings = function() end
+            }, { __index = RemoteLibrary })
+
+            plugin_instance:hookFileChooser(mock_fc)
+
+            local action_item = { is_action = true, is_file = true, text = "[Refresh Cloud]" }
+            local res = mock_fc:showFileDialog(action_item)
+
+            assert.is_true(res)
+            assert.is_false(original_showFileDialog_called)
         end)
 
         it("intercepts onFileSelect and shows ConfirmBox for proxy file", function()

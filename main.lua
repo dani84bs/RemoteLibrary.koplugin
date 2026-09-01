@@ -392,12 +392,22 @@ function RemoteLibrary:hookFileChooser(fc)
     logger.info("[RemoteLibrary] hookFileChooser called, home_dir:", home_dir)
     if not home_dir then return end
 
+    self.fc = fc
+
     if not fc._remotelibrary_patched then
         fc._remotelibrary_patched = true
 
         local original_getList = fc.getList
         fc.getList = function(fc_self, path, collate)
             local dirs, files = original_getList(fc_self, path, collate)
+
+            if path == home_dir and self:isRefreshActionEntryShown() then
+                table.insert(files, 1, {
+                    text = _("[Refresh Cloud]"),
+                    is_file = true,
+                    is_action = true,
+                })
+            end
 
             -- Check if path is a mapped directory
             local _, node_files = RemoteMap.listChildren(home_dir, path)
@@ -459,12 +469,36 @@ function RemoteLibrary:hookFileChooser(fc)
             end
             return original_changeToPath(fc_self, path, focused_path)
         end
+
+        -- genItemTable re-sorts dirs/files by the active collate mode, which
+        -- would otherwise scatter the action entry inserted by getList; pin
+        -- it back to the front here, the same way KOReader itself special-cases
+        -- the ".." go-up row after sorting.
+        local original_genItemTable = fc.genItemTable
+        fc.genItemTable = function(fc_self, dirs, files, path)
+            local item_table = original_genItemTable(fc_self, dirs, files, path)
+            if path == home_dir then
+                for i, item in ipairs(item_table) do
+                    if item.is_action then
+                        if i ~= 1 then
+                            table.remove(item_table, i)
+                            table.insert(item_table, 1, item)
+                        end
+                        break
+                    end
+                end
+            end
+            return item_table
+        end
     end
 
     if fc.onFileSelect and fc.onFileSelect ~= fc._remotelibrary_hooked_onFileSelect then
         local original_onFileSelect = fc.onFileSelect
         fc.onFileSelect = function(fc_self, item)
-            if item.is_proxy and item.is_file then
+            if item.is_action then
+                self:reloadRemoteLibrary()
+                return true
+            elseif item.is_proxy and item.is_file then
                 if fc_self.ui and fc_self.ui.selected_files then
                     UIManager:show(InfoMessage:new{
                         text = _("Operations on remote proxy files are not supported in select mode."),
@@ -493,7 +527,7 @@ function RemoteLibrary:hookFileChooser(fc)
     if fc.showFileDialog and fc.showFileDialog ~= fc._remotelibrary_hooked_showFileDialog then
         local original_showFileDialog = fc.showFileDialog
         fc.showFileDialog = function(fc_self, item)
-            if item.is_proxy and item.is_file then
+            if item.is_action or (item.is_proxy and item.is_file) then
                 return true
             else
                 return original_showFileDialog(fc_self, item)
@@ -619,6 +653,11 @@ function RemoteLibrary:loadSettings()
     self.settings = LuaSettings:open(self.settings_file)
 end
 
+function RemoteLibrary:isRefreshActionEntryShown()
+    self:loadSettings()
+    return self.settings:readSetting("show_refresh_action_entry") ~= false
+end
+
 function RemoteLibrary:onFlushSettings()
     if self.updated then
         self.settings:flush()
@@ -700,6 +739,21 @@ function RemoteLibrary:getSettingsSubMenuItems()
                     openChooser(touchmenu_instance)
                 end
             end,
+        },
+        {
+            text = _("Show [Refresh Cloud] entry in file browser"),
+            keep_menu_open = true,
+            checked_func = function()
+                return self:isRefreshActionEntryShown()
+            end,
+            callback = function(touchmenu_instance)
+                self.settings:saveSetting("show_refresh_action_entry", not self:isRefreshActionEntryShown())
+                self.updated = true
+                self:onFlushSettings()
+                if touchmenu_instance then
+                    touchmenu_instance:updateItems()
+                end
+            end,
         }
     }
 end
@@ -741,6 +795,9 @@ function RemoteLibrary:reloadRemoteLibrary()
         return
     end
 
+    if self.is_reloading then return end
+    self.is_reloading = true
+
     local is_cancelled = false
     local used_fast_scan_fallback = false
     local progressbar_dialog
@@ -775,6 +832,7 @@ function RemoteLibrary:reloadRemoteLibrary()
             used_fast_scan_fallback = true
         end,
         on_done = function(tree, folder_count, file_count, cancelled)
+            self.is_reloading = nil
             progressbar_dialog:close()
             if cancelled and folder_count == 0 and file_count == 0 then
                 return
@@ -790,6 +848,9 @@ function RemoteLibrary:reloadRemoteLibrary()
                     text = string.format(_("Reload complete: %d folders and %d files mapped."), folder_count, file_count),
                     timeout = 4,
                 })
+                if self.fc then
+                    self.fc:refreshPath()
+                end
             end
         end,
     }
