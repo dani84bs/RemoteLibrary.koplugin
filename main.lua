@@ -742,6 +742,7 @@ function RemoteLibrary:reloadRemoteLibrary()
     end
 
     local is_cancelled = false
+    local used_fast_scan_fallback = false
     local progressbar_dialog
     progressbar_dialog = ProgressbarDialog:new{
         title = _("Mapping remote library..."),
@@ -759,11 +760,19 @@ function RemoteLibrary:reloadRemoteLibrary()
 
     local callbacks = {
         on_progress = function(folder_count, file_count)
-            local progress_text = string.format(_("%d folders, %d files"), folder_count, file_count)
+            local progress_text
+            if used_fast_scan_fallback then
+                progress_text = string.format(_("Slow scan (fast scan unavailable): %d folders, %d files"), folder_count, file_count)
+            else
+                progress_text = string.format(_("%d folders, %d files"), folder_count, file_count)
+            end
             if progressbar_dialog[1] and progressbar_dialog[1][1] and progressbar_dialog[1][1][2] then
                 progressbar_dialog[1][1][2]:setText(progress_text)
                 progressbar_dialog:redrawProgressbar()
             end
+        end,
+        on_fallback = function()
+            used_fast_scan_fallback = true
         end,
         on_done = function(tree, folder_count, file_count, cancelled)
             progressbar_dialog:close()

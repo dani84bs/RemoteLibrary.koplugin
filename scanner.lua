@@ -153,10 +153,11 @@ end
 --[[--
 Scans a configured cloud-storage provider and builds a remote-map tree.
 
-Tries the WebDAV Depth:infinity fast path first (when applicable), falling
-back to a per-folder crawl. Reports progress via `callbacks.on_progress(
-folder_count, file_count)` and terminates via `callbacks.on_done(tree,
-folder_count, file_count, cancelled)`.
+Tries the WebDAV Depth:infinity fast scan first (when applicable), falling
+back to a per-folder slow scan. Reports progress via `callbacks.on_progress(
+folder_count, file_count)`, signals the fallback via `callbacks.on_fallback()`
+(called once, before the slow scan starts), and terminates via
+`callbacks.on_done(tree, folder_count, file_count, cancelled)`.
 
 `should_cancel()` is polled at each crawl tick and before the scan starts;
 once the WebDAV deep-scan's single PROPFIND request is in flight it can't be
@@ -227,6 +228,7 @@ function Scanner.scan(provider, cloudstorage_dir, callbacks, should_cancel)
             finish(tree, false)
             return
         end
+        callbacks.on_fallback()
     end
 
     processQueue()

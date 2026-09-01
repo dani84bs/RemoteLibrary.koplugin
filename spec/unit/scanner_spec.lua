@@ -302,8 +302,10 @@ describe("Scanner", function()
             listFolder = function() list_folder_calls = list_folder_calls + 1 return {} end
         }
 
+        local fallback_calls = 0
         Scanner.scan(provider, { type = "webdav", url = "/books", address = "https://example.com/dav" }, {
             on_progress = function() end,
+            on_fallback = function() fallback_calls = fallback_calls + 1 end,
             on_done = function() end,
         }, neverCancel)
 
@@ -311,6 +313,7 @@ describe("Scanner", function()
         restore_http()
 
         assert.equals(1, list_folder_calls)
+        assert.equals(1, fallback_calls)
     end)
 
     it("falls back to the per-folder crawl when PROPFIND returns 401", function()
@@ -333,6 +336,7 @@ describe("Scanner", function()
 
         Scanner.scan(provider, { type = "webdav", url = "/books", address = "https://example.com/dav" }, {
             on_progress = function() end,
+            on_fallback = function() end,
             on_done = function() end,
         }, neverCancel)
 
@@ -401,6 +405,7 @@ describe("Scanner", function()
 
         Scanner.scan(provider, { type = "webdav", url = "/books", address = "https://example.com/dav" }, {
             on_progress = function() end,
+            on_fallback = function() end,
             on_done = function() end,
         }, neverCancel)
 
