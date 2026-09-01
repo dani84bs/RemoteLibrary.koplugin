@@ -402,8 +402,15 @@ function RemoteLibrary:hookFileChooser(fc)
             local dirs, files = original_getList(fc_self, path, collate)
 
             if path == home_dir and self:isRefreshActionEntryShown() then
+                -- A real (if make-believe) path, not nil: CoverBrowser's list/mosaic
+                -- views call BookInfoManager:getBookInfo(item.path) on every file-type
+                -- entry to render it, which needs a string to operate on. This path
+                -- never resolves to an actual file, so it falls through to
+                -- BookInfoManager's own "unsupported/no provider" stub, same as any
+                -- other non-book file in the library.
                 table.insert(files, 1, {
                     text = _("[Refresh Cloud]"),
+                    path = home_dir .. "/.remotelibrary_refresh_cloud_action",
                     is_file = true,
                     is_action = true,
                 })
@@ -432,7 +439,7 @@ function RemoteLibrary:hookFileChooser(fc)
 
             -- Post-process files to tag virtual ones with [Cloud] and add url/size metadata
             for _, f in ipairs(files) do
-                if type(f) == "table" and f.path then
+                if type(f) == "table" and f.path and not f.is_action then
                     local f_rel = RemoteMap.getRelativePath(home_dir, f.path)
                     if f_rel and lfs.original_attributes(f.path, "mode") ~= "file" then
                         f.is_proxy = true

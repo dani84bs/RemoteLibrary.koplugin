@@ -1208,8 +1208,23 @@ return {
             assert.equals(2, #files)
             assert.is_true(files[1].is_action)
             assert.equals("[Refresh Cloud]", files[1].text)
+            -- A non-nil path is required so CoverBrowser's list/mosaic views can
+            -- call BookInfoManager:getBookInfo(item.path) on it without crashing;
+            -- it must not itself get caught by the [Cloud]-tagging below.
+            assert.is_string(files[1].path)
+            assert.is_nil(files[1].is_proxy)
             assert.equals("remote_book.epub [Cloud]", files[2].text)
             assert.is_true(files[2].is_proxy)
+
+            -- Regression check for the crash CoverBrowser's list/mosaic views hit
+            -- when an item has is_file = true but path = nil: BookInfoManager
+            -- (patched by RemoteLibrary itself) must handle the action entry's
+            -- path without erroring, the same as it does for any other
+            -- unsupported/nonexistent file.
+            local BookInfoManager = require("bookinfomanager")
+            assert.has_no.errors(function()
+                BookInfoManager:getBookInfo(files[1].path, false)
+            end)
         end)
 
         it("re-pins the action entry to the front after genItemTable sorts the merged listing", function()
