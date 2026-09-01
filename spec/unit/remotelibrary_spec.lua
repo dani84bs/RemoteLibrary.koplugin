@@ -1945,5 +1945,103 @@ return {
             assert.is_table(props)
             assert.equals("remote_book", props.display_title)
         end)
+
+        it("treats a locally-deleted, non-remote file as a proxy in BookInfo:getDocProps (documents pre-fix bug)", function()
+            package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
+            local spec_support = require("remotelibrary_spec_support")
+
+            local BookInfo = require("apps/filemanager/filemanagerbookinfo")
+            local restore_flag = spec_support.patch(BookInfo, "_remotelibrary_patched", nil)
+
+            local original_called = false
+            local restore_getDocProps = spec_support.patch(BookInfo, "getDocProps", function(...)
+                original_called = true
+                return { display_title = "original" }
+            end)
+
+            package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+            local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+            local plugin_instance = spec_support.mockInstance(RemoteLibrary, {
+                ui = { menu = { registerToMainMenu = function() end } },
+                settings = { readSetting = function() return nil end },
+                loadSettings = function() end
+            })
+
+            plugin_instance:init()
+            local props = BookInfo.getDocProps(nil, "/books/not_remote.epub")
+
+            restore_getDocProps()
+            restore_flag()
+
+            assert.is_false(original_called)
+            assert.is_table(props)
+            assert.equals("not_remote", props.display_title)
+        end)
+
+        it("treats a locally-deleted, non-remote file as a proxy in BookInfoManager:getBookInfo (documents pre-fix bug)", function()
+            package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
+            local spec_support = require("remotelibrary_spec_support")
+
+            local BookInfoManager = require("bookinfomanager")
+            local restore_flag = spec_support.patch(BookInfoManager, "_remotelibrary_patched", nil)
+
+            local original_called = false
+            local restore_getBookInfo = spec_support.patch(BookInfoManager, "getBookInfo", function(...)
+                original_called = true
+                return { marker = "original" }
+            end)
+
+            package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+            local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+            local plugin_instance = spec_support.mockInstance(RemoteLibrary, {
+                ui = { menu = { registerToMainMenu = function() end } },
+                settings = { readSetting = function() return nil end },
+                loadSettings = function() end
+            })
+
+            plugin_instance:init()
+            local info = BookInfoManager:getBookInfo("/books/not_remote.epub")
+
+            restore_getBookInfo()
+            restore_flag()
+
+            assert.is_false(original_called)
+            assert.is_table(info)
+            assert.is_nil(info.marker)
+            assert.equals("not_remote", info.title)
+        end)
+
+        it("treats a locally-deleted, non-remote file as a proxy in BookInfoManager:getDocProps (documents pre-fix bug)", function()
+            package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
+            local spec_support = require("remotelibrary_spec_support")
+
+            local BookInfoManager = require("bookinfomanager")
+            local restore_flag = spec_support.patch(BookInfoManager, "_remotelibrary_patched", nil)
+
+            local original_called = false
+            local restore_getDocProps = spec_support.patch(BookInfoManager, "getDocProps", function(...)
+                original_called = true
+                return { marker = "original" }
+            end)
+
+            package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
+            local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+            local plugin_instance = spec_support.mockInstance(RemoteLibrary, {
+                ui = { menu = { registerToMainMenu = function() end } },
+                settings = { readSetting = function() return nil end },
+                loadSettings = function() end
+            })
+
+            plugin_instance:init()
+            local props = BookInfoManager:getDocProps("/books/not_remote.epub")
+
+            restore_getDocProps()
+            restore_flag()
+
+            assert.is_false(original_called)
+            assert.is_table(props)
+            assert.is_nil(props.marker)
+            assert.equals("not_remote", props.display_title)
+        end)
     end)
 end)
