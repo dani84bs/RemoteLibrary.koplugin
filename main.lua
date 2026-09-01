@@ -25,6 +25,7 @@ local http = require("socket.http")
 local ltn12 = require("ltn12")
 local socket = require("socket")
 local socketutil = require("socketutil")
+local RemoteMap = require("remotemap")
 
 local RemoteLibrary = WidgetContainer:extend{
     name = "remotelibrary",
@@ -90,134 +91,6 @@ local function makePhysicalPath(path)
     return success, err
 end
 
-local function getRelativePath(home_dir, current_path)
-    if not home_dir or not current_path then return nil end
-
-    local h_clean = home_dir:gsub("/+$", "")
-    local c_clean = current_path:gsub("/+$", "")
-
-    -- 1. Match unresolved paths first
-    if c_clean == h_clean then
-        return ""
-    end
-    if c_clean:sub(1, #h_clean + 1) == h_clean .. "/" then
-        return c_clean:sub(#h_clean + 2)
-    end
-
-    -- 2. Try matching resolved paths
-    local ffiUtil = require("ffi/util")
-    local realpath = ffiUtil.original_realpath or ffiUtil.realpath
-    local home = realpath(home_dir) or home_dir
-    local curr = realpath(current_path)
-    if not curr then
-        local parent, name = current_path:match("(.*)/(.*)")
-        if parent then
-            local real_parent = realpath(parent)
-            if real_parent then
-                curr = real_parent .. "/" .. name
-            end
-        end
-    end
-    curr = curr or current_path
-
-    home = home:gsub("/+$", "")
-    curr = curr:gsub("/+$", "")
-
-    if curr == home then
-        return ""
-    end
-    if curr:sub(1, #home + 1) == home .. "/" then
-        return curr:sub(#home + 2)
-    end
-
-    return nil
-end
-
-local function getNodeForRelativePath(map, rel_path)
-    if not map then return nil end
-    if rel_path == "" then
-        return map
-    end
-    local node = map
-    for part in rel_path:gmatch("[^/]+") do
-        if node.folders then
-            local next_node = node.folders[part .. "/"] or node.folders[part]
-            if next_node then
-                node = next_node
-            else
-                return nil
-            end
-        else
-            return nil
-        end
-    end
-    return node
-end
-
-local _cached_map = nil
-
-local function getRemoteLibraryMap()
-    if _cached_map then
-        return _cached_map
-    end
-    local map_file_path = DataStorage:getSettingsDir() .. "/remotelibrary_map.lua"
-    if util.fileExists(map_file_path) then
-        local ok, res = pcall(dofile, map_file_path)
-        if ok then
-            _cached_map = res
-            return _cached_map
-        else
-            logger.warn("[RemoteLibrary] Failed to load map:", res)
-        end
-    end
-    return nil
-end
-
-local function getVirtualAttributes(map, rel_path)
-    rel_path = rel_path:gsub("/+$", "")
-
-    -- Check if it is a directory
-    local node = getNodeForRelativePath(map, rel_path)
-    if node then
-        return {
-            mode = "directory",
-            size = 0,
-            modification = os.time(),
-            access = os.time(),
-            change = os.time(),
-        }
-    end
-
-    -- Check if it is a file
-    local parent_path, target_name = rel_path:match("(.*)/(.*)")
-    if not parent_path then
-        parent_path = ""
-        target_name = rel_path
-    end
-
-    local parent_node = getNodeForRelativePath(map, parent_path)
-    if parent_node and parent_node.files then
-        for _, file in ipairs(parent_node.files) do
-            if file.name == target_name then
-                return {
-                    mode = "file",
-                    size = file.filesize or 0,
-                    modification = file.modification or os.time(),
-                    access = file.modification or os.time(),
-                    change = file.modification or os.time(),
-                }
-            end
-        end
-    end
-
-    return nil
-end
-
-local function isProxyFile(map, rel_path)
-    local attr = getVirtualAttributes(map, rel_path)
-    return attr ~= nil and attr.mode == "file"
-end
-
 function RemoteLibrary:init()
     self.ui.menu:registerToMainMenu(self)
 
@@ -237,11 +110,7 @@ function RemoteLibrary:init()
             end
             local hdir = G_reader_settings:readSetting("home_dir") or Device.home_dir
             if not hdir then return nil end
-            local rel_path = getRelativePath(hdir, path)
-            if not rel_path then return nil end
-            local map = getRemoteLibraryMap()
-            if not map then return nil end
-            if not getVirtualAttributes(map, rel_path) then return nil end
+            if not RemoteMap.resolveProxy(hdir, path) then return nil end
             local parts = {}
             local current = path
             local resolved_base = nil
@@ -281,20 +150,11 @@ function RemoteLibrary:init()
                 return original_dir(path)
             end
 
-            local rel_path = getRelativePath(hdir, path)
-            if not rel_path then
+            local folders, files = RemoteMap.listChildren(hdir, path)
+            if not folders then
                 return original_dir(path)
             end
-
-            local map = getRemoteLibraryMap()
-            if not map then
-                return original_dir(path)
-            end
-
-            local node = getNodeForRelativePath(map, rel_path)
-            if not node then
-                return original_dir(path)
-            end
+            local node = { folders = folders, files = files }
 
             -- Collect all local items first (if the directory exists)
             local local_items = {}
@@ -375,17 +235,7 @@ function RemoteLibrary:init()
                 return nil
             end
 
-            local rel_path = getRelativePath(hdir, path)
-            if not rel_path then
-                return nil
-            end
-
-            local map = getRemoteLibraryMap()
-            if not map then
-                return nil
-            end
-
-            local virtual_attr = getVirtualAttributes(map, rel_path)
+            local virtual_attr = RemoteMap.resolveProxy(hdir, path)
             if not virtual_attr then
                 return nil
             end
@@ -407,56 +257,32 @@ function RemoteLibrary:init()
         ReaderUI.showReader = function(r_self, file, provider, seamless, is_provider_forced, after_open_callback)
             local hdir = G_reader_settings:readSetting("home_dir") or Device.home_dir
             if hdir then
-                local rel_path = getRelativePath(hdir, file)
-                if rel_path then
-                    -- Let's see if the file exists on disk
-                    local exists_on_disk = lfs.original_attributes(file, "mode") == "file"
-                    if not exists_on_disk then
-                        -- Check if it exists in the remote map
-                        local map = getRemoteLibraryMap()
-                        if map then
-                            local parent_path, target_name = rel_path:match("(.*)/(.*)")
-                            if not parent_path then
-                                parent_path = ""
-                                target_name = rel_path
-                            end
-                            local parent_node = getNodeForRelativePath(map, parent_path)
-                            if parent_node and parent_node.files then
-                                local matched_file
-                                for _, f in ipairs(parent_node.files) do
-                                    if f.name == target_name then
-                                        matched_file = f
-                                        break
-                                    end
+                local proxy = RemoteMap.resolveProxy(hdir, file)
+                if proxy and proxy.mode == "file" then
+                    -- It is a virtual proxy file! Prompt download and then open!
+                    local target_name = file:match("[^/]+$") or file
+                    local item = {
+                        text = "[Cloud] " .. target_name,
+                        path = file,
+                        is_proxy = true,
+                        is_file = true,
+                        url = proxy.url,
+                        filesize = proxy.size,
+                        modification = proxy.modification,
+                    }
+                    UIManager:show(ConfirmBox:new{
+                        text = string.format(_("Would you like to download %s?"), target_name),
+                        ok_text = _("Download"),
+                        cancel_text = _("Cancel"),
+                        ok_callback = function()
+                            self:downloadRemoteFile(item, function(success)
+                                if success then
+                                    original_showReader(r_self, file, provider, seamless, is_provider_forced, after_open_callback)
                                 end
-                                if matched_file then
-                                    -- It is a virtual proxy file! Prompt download and then open!
-                                    local item = {
-                                        text = "[Cloud] " .. target_name,
-                                        path = file,
-                                        is_proxy = true,
-                                        is_file = true,
-                                        url = matched_file.url,
-                                        filesize = matched_file.filesize,
-                                        modification = matched_file.modification,
-                                    }
-                                    UIManager:show(ConfirmBox:new{
-                                        text = string.format(_("Would you like to download %s?"), target_name),
-                                        ok_text = _("Download"),
-                                        cancel_text = _("Cancel"),
-                                        ok_callback = function()
-                                            self:downloadRemoteFile(item, function(success)
-                                                if success then
-                                                    original_showReader(r_self, file, provider, seamless, is_provider_forced, after_open_callback)
-                                                end
-                                            end)
-                                        end,
-                                    })
-                                    return
-                                end
-                            end
-                        end
-                    end
+                            end)
+                        end,
+                    })
+                    return
                 end
             end
             return original_showReader(r_self, file, provider, seamless, is_provider_forced, after_open_callback)
@@ -486,13 +312,10 @@ function RemoteLibrary:init()
         BookInfo.getDocProps = function(bi_self, file, book_props, no_open_document)
             local hdir = G_reader_settings:readSetting("home_dir") or Device.home_dir
             if hdir then
-                local rel_path = getRelativePath(hdir, file)
-                if rel_path and lfs.original_attributes(file, "mode") ~= "file" then
-                    local map = getRemoteLibraryMap()
-                    if map and isProxyFile(map, rel_path) then
-                        logger.info("[RemoteLibrary] BookInfo:getDocProps intercepted proxy:", file)
-                        return BookInfo.extendProps(nil, file)
-                    end
+                local proxy = RemoteMap.resolveProxy(hdir, file)
+                if proxy and proxy.mode == "file" then
+                    logger.info("[RemoteLibrary] BookInfo:getDocProps intercepted proxy:", file)
+                    return BookInfo.extendProps(nil, file)
                 end
             end
             return original_getDocProps(bi_self, file, book_props, no_open_document)
@@ -508,29 +331,26 @@ function RemoteLibrary:init()
         BookInfoManager.getBookInfo = function(bim_self, filepath, get_cover)
             local hdir = G_reader_settings:readSetting("home_dir") or Device.home_dir
             if hdir then
-                local rel_path = getRelativePath(hdir, filepath)
-                if rel_path and lfs.original_attributes(filepath, "mode") ~= "file" then
-                    local map = getRemoteLibraryMap()
-                    if map and isProxyFile(map, rel_path) then
-                        logger.info("[RemoteLibrary] BookInfoManager:getBookInfo intercepted proxy:", filepath)
-                        local directory, filename = util.splitFilePathName(filepath)
-                        local clean_filename = filename:gsub("^%[Cloud%]%s*", "")
-                        local filename_without_suffix = filemanagerutil.splitFileNameType(clean_filename)
-                        return {
-                            directory = directory,
-                            filename = filename,
-                            in_progress = 0,
-                            cover_fetched = "Y",
-                            has_meta = true,
-                            has_cover = nil,
-                            ignore_meta = false,
-                            ignore_cover = "Y",
-                            title = filename_without_suffix,
-                            authors = _("[Cloud]"),
-                            _is_directory = false,
-                            _no_provider = true
-                        }
-                    end
+                local proxy = RemoteMap.resolveProxy(hdir, filepath)
+                if proxy and proxy.mode == "file" then
+                    logger.info("[RemoteLibrary] BookInfoManager:getBookInfo intercepted proxy:", filepath)
+                    local directory, filename = util.splitFilePathName(filepath)
+                    local clean_filename = filename:gsub("^%[Cloud%]%s*", "")
+                    local filename_without_suffix = filemanagerutil.splitFileNameType(clean_filename)
+                    return {
+                        directory = directory,
+                        filename = filename,
+                        in_progress = 0,
+                        cover_fetched = "Y",
+                        has_meta = true,
+                        has_cover = nil,
+                        ignore_meta = false,
+                        ignore_cover = "Y",
+                        title = filename_without_suffix,
+                        authors = _("[Cloud]"),
+                        _is_directory = false,
+                        _no_provider = true
+                    }
                 end
             end
             return original_getBookInfo(bim_self, filepath, get_cover)
@@ -540,13 +360,10 @@ function RemoteLibrary:init()
         BookInfoManager.getDocProps = function(bim_self, filepath)
             local hdir = G_reader_settings:readSetting("home_dir") or Device.home_dir
             if hdir then
-                local rel_path = getRelativePath(hdir, filepath)
-                if rel_path and lfs.original_attributes(filepath, "mode") ~= "file" then
-                    local map = getRemoteLibraryMap()
-                    if map and isProxyFile(map, rel_path) then
-                        logger.info("[RemoteLibrary] BookInfoManager:getDocProps intercepted proxy:", filepath)
-                        return BookInfo.extendProps(nil, filepath)
-                    end
+                local proxy = RemoteMap.resolveProxy(hdir, filepath)
+                if proxy and proxy.mode == "file" then
+                    logger.info("[RemoteLibrary] BookInfoManager:getDocProps intercepted proxy:", filepath)
+                    return BookInfo.extendProps(nil, filepath)
                 end
             end
             return original_bim_getDocProps(bim_self, filepath)
@@ -585,28 +402,16 @@ function RemoteLibrary:hookFileChooser(fc)
         fc.getList = function(fc_self, path, collate)
             local dirs, files = original_getList(fc_self, path, collate)
 
-            -- Load the map
-            local map = getRemoteLibraryMap()
-            if not map then
-                return dirs, files
-            end
-
-            -- Check if path is under home_dir
-            local rel_path = getRelativePath(home_dir, path)
-            if not rel_path then
-                return dirs, files
-            end
-
-            -- Traverse remote map
-            local node = getNodeForRelativePath(map, rel_path)
-            if not node then
+            -- Check if path is a mapped directory
+            local _, node_files = RemoteMap.listChildren(home_dir, path)
+            if not node_files then
                 return dirs, files
             end
 
             -- Post-process dirs to tag virtual ones with [Cloud]
             for _, d in ipairs(dirs) do
                 if type(d) == "table" and d.path then
-                    local d_rel = getRelativePath(home_dir, d.path)
+                    local d_rel = RemoteMap.getRelativePath(home_dir, d.path)
                     if d_rel and lfs.original_attributes(d.path, "mode") ~= "directory" then
                         d.is_proxy = true
                         d.is_folder = true
@@ -621,24 +426,22 @@ function RemoteLibrary:hookFileChooser(fc)
             -- Post-process files to tag virtual ones with [Cloud] and add url/size metadata
             for _, f in ipairs(files) do
                 if type(f) == "table" and f.path then
-                    local f_rel = getRelativePath(home_dir, f.path)
+                    local f_rel = RemoteMap.getRelativePath(home_dir, f.path)
                     if f_rel and lfs.original_attributes(f.path, "mode") ~= "file" then
                         f.is_proxy = true
                         f.is_file = true
                         local target_name = f_rel:match("[^/]+$") or f.text
-                        if node.files then
-                            for _, file in ipairs(node.files) do
-                                if file.name == target_name then
-                                    f.url = file.url
-                                    f.filesize = file.filesize
-                                    f.modification = file.modification
-                                    f.attr = {
-                                        mode = "file",
-                                        size = file.filesize,
-                                        modification = file.modification,
-                                    }
-                                    break
-                                end
+                        for _, file in ipairs(node_files) do
+                            if file.name == target_name then
+                                f.url = file.url
+                                f.filesize = file.filesize
+                                f.modification = file.modification
+                                f.attr = {
+                                    mode = "file",
+                                    size = file.filesize,
+                                    modification = file.modification,
+                                }
+                                break
                             end
                         end
                         if not f.text:find("^%[Cloud%]") then
@@ -653,7 +456,7 @@ function RemoteLibrary:hookFileChooser(fc)
 
         local original_changeToPath = fc.changeToPath
         fc.changeToPath = function(fc_self, path, focused_path)
-            local rel_path = getRelativePath(home_dir, path)
+            local rel_path = RemoteMap.getRelativePath(home_dir, path)
             if rel_path then
                 makePhysicalPath(path)
             end
@@ -1178,7 +981,7 @@ function RemoteLibrary:reloadRemoteLibrary()
             progressbar_dialog:close()
             if folder_count > 0 or file_count > 0 then
                 saveMap()
-                _cached_map = nil
+                RemoteMap.invalidate()
                 UIManager:show(InfoMessage:new{
                     text = string.format(_("Reload cancelled: %d folders and %d files mapped so far."), folder_count, file_count),
                     timeout = 4,
@@ -1190,7 +993,7 @@ function RemoteLibrary:reloadRemoteLibrary()
         if #queue == 0 then
             progressbar_dialog:close()
             saveMap()
-            _cached_map = nil
+            RemoteMap.invalidate()
             UIManager:show(InfoMessage:new{
                 text = string.format(_("Reload complete: %d folders and %d files mapped."), folder_count, file_count),
                 timeout = 4,
@@ -1245,7 +1048,7 @@ function RemoteLibrary:reloadRemoteLibrary()
                 file_count = deep_file_count
                 progressbar_dialog:close()
                 saveMap()
-                _cached_map = nil
+                RemoteMap.invalidate()
                 UIManager:show(InfoMessage:new{
                     text = string.format(_("Reload complete: %d folders and %d files mapped."), folder_count, file_count),
                     timeout = 4,

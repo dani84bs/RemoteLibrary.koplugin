@@ -1,6 +1,14 @@
 describe("RemoteLibrary plugin", function()
+    local orig_path
+
     setup(function()
+        orig_path = package.path
+        package.path = "plugins/RemoteLibrary.koplugin/?.lua;" .. package.path
         require("commonrequire")
+    end)
+
+    teardown(function()
+        package.path = orig_path
     end)
 
     it("can load metadata", function()
