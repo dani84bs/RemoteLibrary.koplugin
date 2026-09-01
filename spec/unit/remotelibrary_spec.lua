@@ -495,7 +495,7 @@ describe("RemoteLibrary plugin", function()
             end
         })
 
-        local item = { path = "/books/remote_book.epub", text = "[Cloud] remote_book.epub" }
+        local item = { path = "/books/remote_book.epub", text = "remote_book.epub [Cloud]" }
         mock_instance:downloadAndOpenFile(item)
 
         restore_openFile()
@@ -895,21 +895,21 @@ return {
             local dirs, files = mock_fm.file_chooser:getList("/books", { item_func = function() end })
 
             assert.equals(1, #dirs)
-            assert.equals("[Cloud] remote_folder/", dirs[1].text)
+            assert.equals("remote_folder/ [Cloud]", dirs[1].text)
             assert.is_true(dirs[1].is_proxy)
 
             assert.equals(1, #files)
-            assert.equals("[Cloud] remote_book.epub", files[1].text)
+            assert.equals("remote_book.epub [Cloud]", files[1].text)
             assert.is_true(files[1].is_proxy)
 
             -- Test nested subdirectory mapping
             local nested_dirs, nested_files = mock_fm.file_chooser:getList("/books/remote_folder", { item_func = function() end })
             assert.equals(1, #nested_dirs)
-            assert.equals("[Cloud] nested_folder/", nested_dirs[1].text)
+            assert.equals("nested_folder/ [Cloud]", nested_dirs[1].text)
             assert.is_true(nested_dirs[1].is_proxy)
 
             assert.equals(1, #nested_files)
-            assert.equals("[Cloud] nested_book.epub", nested_files[1].text)
+            assert.equals("nested_book.epub [Cloud]", nested_files[1].text)
             assert.is_true(nested_files[1].is_proxy)
 
             local BookInfoManager = require("bookinfomanager")
@@ -1016,7 +1016,7 @@ return {
 
             plugin_instance:hookFileChooser(mock_fc)
 
-            local proxy_item = { is_proxy = true, is_file = true, text = "[Cloud] book.epub" }
+            local proxy_item = { is_proxy = true, is_file = true, text = "book.epub [Cloud]" }
             mock_fc:onFileSelect(proxy_item)
 
             UIManager.show = original_show
@@ -1054,7 +1054,7 @@ return {
 
             plugin_instance:hookFileChooser(mock_fc)
 
-            local proxy_folder = { is_proxy = true, is_folder = true, text = "[Cloud] folder/" }
+            local proxy_folder = { is_proxy = true, is_folder = true, text = "folder/ [Cloud]" }
             mock_fc:onFileSelect(proxy_folder)
 
             assert.is_false(download_called)
@@ -1130,7 +1130,7 @@ return {
 
             plugin_instance:hookFileChooser(mock_fc)
 
-            local proxy_item = { is_proxy = true, is_file = true, text = "[Cloud] book.epub" }
+            local proxy_item = { is_proxy = true, is_file = true, text = "book.epub [Cloud]" }
             local res = mock_fc:onFileSelect(proxy_item)
 
             restore_show()

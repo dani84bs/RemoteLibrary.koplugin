@@ -123,11 +123,11 @@ function M.reloadAndCapture(remotelibrary, UIManager)
     return message
 end
 
--- Finds the [Cloud]-prefixed proxy entry for name in a FileChooser item
+-- Finds the [Cloud]-tagged proxy entry for name in a FileChooser item
 -- table (as returned by FileChooser:genItemTableFromPath).
 function M.findCloudProxy(items, name)
     for _, item in ipairs(items) do
-        if item.text == "[Cloud] " .. name then return item end
+        if item.text == name .. " [Cloud]" then return item end
     end
     return nil
 end

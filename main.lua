@@ -265,7 +265,7 @@ function RemoteLibrary:init()
                         -- It is a virtual proxy file! Prompt download and then open!
                         local target_name = file:match("[^/]+$") or file
                         local item = {
-                            text = "[Cloud] " .. target_name,
+                            text = target_name .. " [Cloud]",
                             path = file,
                             is_proxy = true,
                             is_file = true,
@@ -332,7 +332,7 @@ function RemoteLibrary:init()
                     if proxy and proxy.mode == "file" then
                         logger.info("[RemoteLibrary] BookInfoManager:getBookInfo intercepted proxy:", filepath)
                         local directory, filename = util.splitFilePathName(filepath)
-                        local clean_filename = filename:gsub("^%[Cloud%]%s*", "")
+                        local clean_filename = filename:gsub("%s*%[Cloud%]$", "")
                         local filename_without_suffix = filemanagerutil.splitFileNameType(clean_filename)
                         return {
                             directory = directory,
@@ -412,9 +412,9 @@ function RemoteLibrary:hookFileChooser(fc)
                     if d_rel and lfs.original_attributes(d.path, "mode") ~= "directory" then
                         d.is_proxy = true
                         d.is_folder = true
-                        if not d.text:find("^%[Cloud%]") then
+                        if not d.text:find("%[Cloud%]$") then
                             local clean_name = d.text:gsub("/+$", "")
-                            d.text = "[Cloud] " .. clean_name .. "/"
+                            d.text = clean_name .. "/ [Cloud]"
                         end
                     end
                 end
@@ -441,8 +441,8 @@ function RemoteLibrary:hookFileChooser(fc)
                                 break
                             end
                         end
-                        if not f.text:find("^%[Cloud%]") then
-                            f.text = "[Cloud] " .. f.text
+                        if not f.text:find("%[Cloud%]$") then
+                            f.text = f.text .. " [Cloud]"
                         end
                     end
                 end
@@ -472,7 +472,7 @@ function RemoteLibrary:hookFileChooser(fc)
                     })
                     return true
                 else
-                    local clean_filename = item.text:gsub("^%[Cloud%]%s*", "")
+                    local clean_filename = item.text:gsub("%s*%[Cloud%]$", "")
                     UIManager:show(ConfirmBox:new{
                         text = string.format(_("Would you like to download %s?"), clean_filename),
                         ok_text = _("Download"),
@@ -536,7 +536,7 @@ function RemoteLibrary:downloadRemoteFile(item, callback)
 
     local progressbar_dialog = ProgressbarDialog:new{
         title = _("Downloading remote file…"),
-        subtitle = item.text:gsub("^%[Cloud%]%s*", ""),
+        subtitle = item.text:gsub("%s*%[Cloud%]$", ""),
         progress_max = item.filesize or 0,
         dismissable = true,
         dismiss_text = _("Do you want to cancel downloading?"),
@@ -598,7 +598,7 @@ function RemoteLibrary:downloadRemoteFile(item, callback)
         else
             os.remove(target_path)
             UIManager:show(InfoMessage:new{
-                text = string.format(_("Download failed: %s"), item.text:gsub("^%[Cloud%]%s*", "")),
+                text = string.format(_("Download failed: %s"), item.text:gsub("%s*%[Cloud%]$", "")),
                 timeout = 3,
             })
             if callback then callback(false) end
