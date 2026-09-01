@@ -91,17 +91,31 @@ local function makePhysicalPath(path)
     return success, err
 end
 
+-- Installs a monkey-patch on target[method_name] exactly once (idempotency
+-- guard keyed by opts.guard_key, default "_remotelibrary_patched"). make_wrapper
+-- receives the original function and returns its replacement. opts.expose_original
+-- publishes the original as target["original_" .. method_name] for callers that
+-- need to bypass the patch (e.g. RemoteMap, e2e specs).
+local function installPatch(target, target_name, method_name, make_wrapper, opts)
+    opts = opts or {}
+    local guard_key = opts.guard_key or "_remotelibrary_patched"
+    if target[guard_key] then return end
+    target[guard_key] = true
+    logger.info("[RemoteLibrary] Patching " .. target_name .. ":" .. method_name)
+    local original = target[method_name]
+    if opts.expose_original then
+        target["original_" .. method_name] = original
+    end
+    target[method_name] = make_wrapper(original)
+end
+
 function RemoteLibrary:init()
     self.ui.menu:registerToMainMenu(self)
 
     -- Hook ffi/util realpath globally
     local ffiUtil = require("ffi/util")
-    if not ffiUtil._remotelibrary_patched then
-        ffiUtil._remotelibrary_patched = true
-        logger.info("[RemoteLibrary] Patching ffi/util realpath")
-        local original_realpath = ffiUtil.realpath
-        ffiUtil.original_realpath = original_realpath
-        ffiUtil.realpath = function(path)
+    installPatch(ffiUtil, "ffiUtil", "realpath", function(original_realpath)
+        return function(path)
             if not path then return nil end
             path = canonicalizePath(path)
             local resolved = original_realpath(path)
@@ -131,20 +145,13 @@ function RemoteLibrary:init()
             end
             return path
         end
-    end
+    end, { expose_original = true })
 
     -- Hook libs/libkoreader-lfs globally to make virtual files visible to Bookshelf/KOReader
     local lfs = require("libs/libkoreader-lfs")
-    if not lfs._remotelibrary_patched then
-        lfs._remotelibrary_patched = true
-        logger.info("[RemoteLibrary] Patching libs/libkoreader-lfs")
-        local original_dir = lfs.dir
-        local original_attributes = lfs.attributes
 
-        lfs.original_dir = original_dir
-        lfs.original_attributes = original_attributes
-
-        lfs.dir = function(path)
+    installPatch(lfs, "lfs", "dir", function(original_dir)
+        return function(path)
             local hdir = G_reader_settings:readSetting("home_dir") or Device.home_dir
             if not hdir then
                 return original_dir(path)
@@ -169,7 +176,7 @@ function RemoteLibrary:init()
 
             -- Collect all virtual items (not already in local_items)
             local virtual_items = {}
-            
+
             -- Overlay folders
             if node.folders then
                 for folder_name, _ in pairs(node.folders) do
@@ -215,8 +222,10 @@ function RemoteLibrary:init()
 
             return custom_iterator, dummy_dir_obj
         end
+    end, { guard_key = "_dir_remotelibrary_patched" })
 
-        lfs.attributes = function(path, request)
+    installPatch(lfs, "lfs", "attributes", function(original_attributes)
+        return function(path, request)
             -- First, check if the real file/directory exists on disk
             local real_res
             if request then
@@ -246,70 +255,64 @@ function RemoteLibrary:init()
                 return virtual_attr
             end
         end
-    end
+    end, { guard_key = "_attributes_remotelibrary_patched", expose_original = true })
 
     -- Hook ReaderUI:showReader globally to intercept opening virtual books and download them first
     local ok_reader, ReaderUI = pcall(require, "apps/reader/readerui")
-    if ok_reader and ReaderUI and not ReaderUI._remotelibrary_patched then
-        ReaderUI._remotelibrary_patched = true
-        logger.info("[RemoteLibrary] Patching ReaderUI:showReader")
-        local original_showReader = ReaderUI.showReader
-        ReaderUI.showReader = function(r_self, file, provider, seamless, is_provider_forced, after_open_callback)
-            local hdir = G_reader_settings:readSetting("home_dir") or Device.home_dir
-            if hdir then
-                local proxy = RemoteMap.resolveProxy(hdir, file)
-                if proxy and proxy.mode == "file" then
-                    -- It is a virtual proxy file! Prompt download and then open!
-                    local target_name = file:match("[^/]+$") or file
-                    local item = {
-                        text = "[Cloud] " .. target_name,
-                        path = file,
-                        is_proxy = true,
-                        is_file = true,
-                        url = proxy.url,
-                        filesize = proxy.size,
-                        modification = proxy.modification,
-                    }
-                    UIManager:show(ConfirmBox:new{
-                        text = string.format(_("Would you like to download %s?"), target_name),
-                        ok_text = _("Download"),
-                        cancel_text = _("Cancel"),
-                        ok_callback = function()
-                            self:downloadRemoteFile(item, function(success)
-                                if success then
-                                    original_showReader(r_self, file, provider, seamless, is_provider_forced, after_open_callback)
-                                end
-                            end)
-                        end,
-                    })
-                    return
+    if ok_reader and ReaderUI then
+        installPatch(ReaderUI, "ReaderUI", "showReader", function(original_showReader)
+            return function(r_self, file, provider, seamless, is_provider_forced, after_open_callback)
+                local hdir = G_reader_settings:readSetting("home_dir") or Device.home_dir
+                if hdir then
+                    local proxy = RemoteMap.resolveProxy(hdir, file)
+                    if proxy and proxy.mode == "file" then
+                        -- It is a virtual proxy file! Prompt download and then open!
+                        local target_name = file:match("[^/]+$") or file
+                        local item = {
+                            text = "[Cloud] " .. target_name,
+                            path = file,
+                            is_proxy = true,
+                            is_file = true,
+                            url = proxy.url,
+                            filesize = proxy.size,
+                            modification = proxy.modification,
+                        }
+                        UIManager:show(ConfirmBox:new{
+                            text = string.format(_("Would you like to download %s?"), target_name),
+                            ok_text = _("Download"),
+                            cancel_text = _("Cancel"),
+                            ok_callback = function()
+                                self:downloadRemoteFile(item, function(success)
+                                    if success then
+                                        original_showReader(r_self, file, provider, seamless, is_provider_forced, after_open_callback)
+                                    end
+                                end)
+                            end,
+                        })
+                        return
+                    end
                 end
+                return original_showReader(r_self, file, provider, seamless, is_provider_forced, after_open_callback)
             end
-            return original_showReader(r_self, file, provider, seamless, is_provider_forced, after_open_callback)
-        end
+        end)
     end
 
     -- Hook FileChooser init to intercept FileChooser instantiation before first getList
     local FileChooser = require("ui/widget/filechooser")
-    if not FileChooser._init_remotelibrary_patched then
-        FileChooser._init_remotelibrary_patched = true
-        local original_init = FileChooser.init
-        FileChooser.init = function(fc_self)
+    installPatch(FileChooser, "FileChooser", "init", function(original_init)
+        return function(fc_self)
             local plugin = fc_self.ui and (fc_self.ui.RemoteLibrary or fc_self.ui.remotelibrary)
             if plugin then
                 plugin:hookFileChooser(fc_self)
             end
             original_init(fc_self)
         end
-    end
+    end, { guard_key = "_init_remotelibrary_patched" })
 
     -- Hook BookInfo:getDocProps to prevent opening non-existent proxy files
     local BookInfo = require("apps/filemanager/filemanagerbookinfo")
-    if not BookInfo._remotelibrary_patched then
-        BookInfo._remotelibrary_patched = true
-        logger.info("[RemoteLibrary] Patching BookInfo:getDocProps")
-        local original_getDocProps = BookInfo.getDocProps
-        BookInfo.getDocProps = function(bi_self, file, book_props, no_open_document)
+    installPatch(BookInfo, "BookInfo", "getDocProps", function(original_getDocProps)
+        return function(bi_self, file, book_props, no_open_document)
             local hdir = G_reader_settings:readSetting("home_dir") or Device.home_dir
             if hdir then
                 local proxy = RemoteMap.resolveProxy(hdir, file)
@@ -320,69 +323,67 @@ function RemoteLibrary:init()
             end
             return original_getDocProps(bi_self, file, book_props, no_open_document)
         end
-    end
+    end)
 
     -- Hook BookInfoManager:getBookInfo and getDocProps to handle remote proxy files
     local ok, BookInfoManager = pcall(require, "bookinfomanager")
-    if ok and BookInfoManager and not BookInfoManager._remotelibrary_patched then
-        BookInfoManager._remotelibrary_patched = true
-        logger.info("[RemoteLibrary] Patching BookInfoManager:getBookInfo and getDocProps")
-        local original_getBookInfo = BookInfoManager.getBookInfo
-        BookInfoManager.getBookInfo = function(bim_self, filepath, get_cover)
-            local hdir = G_reader_settings:readSetting("home_dir") or Device.home_dir
-            if hdir then
-                local proxy = RemoteMap.resolveProxy(hdir, filepath)
-                if proxy and proxy.mode == "file" then
-                    logger.info("[RemoteLibrary] BookInfoManager:getBookInfo intercepted proxy:", filepath)
-                    local directory, filename = util.splitFilePathName(filepath)
-                    local clean_filename = filename:gsub("^%[Cloud%]%s*", "")
-                    local filename_without_suffix = filemanagerutil.splitFileNameType(clean_filename)
-                    return {
-                        directory = directory,
-                        filename = filename,
-                        in_progress = 0,
-                        cover_fetched = "Y",
-                        has_meta = true,
-                        has_cover = nil,
-                        ignore_meta = false,
-                        ignore_cover = "Y",
-                        title = filename_without_suffix,
-                        authors = _("[Cloud]"),
-                        _is_directory = false,
-                        _no_provider = true
-                    }
+    if ok and BookInfoManager then
+        installPatch(BookInfoManager, "BookInfoManager", "getBookInfo", function(original_getBookInfo)
+            return function(bim_self, filepath, get_cover)
+                local hdir = G_reader_settings:readSetting("home_dir") or Device.home_dir
+                if hdir then
+                    local proxy = RemoteMap.resolveProxy(hdir, filepath)
+                    if proxy and proxy.mode == "file" then
+                        logger.info("[RemoteLibrary] BookInfoManager:getBookInfo intercepted proxy:", filepath)
+                        local directory, filename = util.splitFilePathName(filepath)
+                        local clean_filename = filename:gsub("^%[Cloud%]%s*", "")
+                        local filename_without_suffix = filemanagerutil.splitFileNameType(clean_filename)
+                        return {
+                            directory = directory,
+                            filename = filename,
+                            in_progress = 0,
+                            cover_fetched = "Y",
+                            has_meta = true,
+                            has_cover = nil,
+                            ignore_meta = false,
+                            ignore_cover = "Y",
+                            title = filename_without_suffix,
+                            authors = _("[Cloud]"),
+                            _is_directory = false,
+                            _no_provider = true
+                        }
+                    end
                 end
+                return original_getBookInfo(bim_self, filepath, get_cover)
             end
-            return original_getBookInfo(bim_self, filepath, get_cover)
-        end
+        end, { guard_key = "_getBookInfo_remotelibrary_patched" })
 
-        local original_bim_getDocProps = BookInfoManager.getDocProps
-        BookInfoManager.getDocProps = function(bim_self, filepath)
-            local hdir = G_reader_settings:readSetting("home_dir") or Device.home_dir
-            if hdir then
-                local proxy = RemoteMap.resolveProxy(hdir, filepath)
-                if proxy and proxy.mode == "file" then
-                    logger.info("[RemoteLibrary] BookInfoManager:getDocProps intercepted proxy:", filepath)
-                    return BookInfo.extendProps(nil, filepath)
+        installPatch(BookInfoManager, "BookInfoManager", "getDocProps", function(original_bim_getDocProps)
+            return function(bim_self, filepath)
+                local hdir = G_reader_settings:readSetting("home_dir") or Device.home_dir
+                if hdir then
+                    local proxy = RemoteMap.resolveProxy(hdir, filepath)
+                    if proxy and proxy.mode == "file" then
+                        logger.info("[RemoteLibrary] BookInfoManager:getDocProps intercepted proxy:", filepath)
+                        return BookInfo.extendProps(nil, filepath)
+                    end
                 end
+                return original_bim_getDocProps(bim_self, filepath)
             end
-            return original_bim_getDocProps(bim_self, filepath)
-        end
+        end, { guard_key = "_getDocProps_remotelibrary_patched" })
     end
 
     -- Hook FileManager setupLayout to intercept FileChooser
     local FileManager = require("apps/filemanager/filemanager")
-    if not FileManager._setupLayout_remotelibrary_patched then
-        FileManager._setupLayout_remotelibrary_patched = true
-        local original_setupLayout = FileManager.setupLayout
-        FileManager.setupLayout = function(fm_self)
+    installPatch(FileManager, "FileManager", "setupLayout", function(original_setupLayout)
+        return function(fm_self)
             original_setupLayout(fm_self)
             local plugin = fm_self.RemoteLibrary or fm_self.remotelibrary
             if plugin then
                 plugin:hookFileChooser(fm_self.file_chooser)
             end
         end
-    end
+    end, { guard_key = "_setupLayout_remotelibrary_patched" })
 
     -- If file_chooser is already created, hook it now!
     if self.ui.file_chooser then

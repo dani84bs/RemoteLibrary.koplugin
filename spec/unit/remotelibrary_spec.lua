@@ -1275,9 +1275,9 @@ return {
             local DataStorage = require("datastorage")
             local lfs = require("libs/libkoreader-lfs")
             lfs.attributes = original_attributes
-            lfs._remotelibrary_patched = nil
+            lfs._dir_remotelibrary_patched = nil
+            lfs._attributes_remotelibrary_patched = nil
             lfs.original_attributes = nil
-            lfs.original_dir = nil
 
             local ffiUtil = require("ffi/util")
             ffiUtil.realpath = original_realpath
@@ -1724,7 +1724,8 @@ return {
             }, { __index = RemoteLibrary })
 
             local lfs = require("libs/libkoreader-lfs")
-            lfs._remotelibrary_patched = nil
+            lfs._dir_remotelibrary_patched = nil
+            lfs._attributes_remotelibrary_patched = nil
 
             plugin_instance:init()
 
@@ -1934,7 +1935,7 @@ return {
 
             local BookInfoManager = require("bookinfomanager")
             local original_getDocProps = BookInfoManager.getDocProps
-            local restore_flag = spec_support.patch(BookInfoManager, "_remotelibrary_patched", nil)
+            local restore_flag = spec_support.patch(BookInfoManager, "_getDocProps_remotelibrary_patched", nil)
 
             package.loaded["plugins/RemoteLibrary.koplugin/main.lua"] = nil
             local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
@@ -1991,7 +1992,7 @@ return {
             local spec_support = require("remotelibrary_spec_support")
 
             local BookInfoManager = require("bookinfomanager")
-            local restore_flag = spec_support.patch(BookInfoManager, "_remotelibrary_patched", nil)
+            local restore_flag = spec_support.patch(BookInfoManager, "_getBookInfo_remotelibrary_patched", nil)
 
             local original_called = false
             local restore_getBookInfo = spec_support.patch(BookInfoManager, "getBookInfo", function(...)
@@ -2023,7 +2024,7 @@ return {
             local spec_support = require("remotelibrary_spec_support")
 
             local BookInfoManager = require("bookinfomanager")
-            local restore_flag = spec_support.patch(BookInfoManager, "_remotelibrary_patched", nil)
+            local restore_flag = spec_support.patch(BookInfoManager, "_getDocProps_remotelibrary_patched", nil)
 
             local original_called = false
             local restore_getDocProps = spec_support.patch(BookInfoManager, "getDocProps", function(...)
