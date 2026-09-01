@@ -31,6 +31,20 @@ local RemoteLibrary = WidgetContainer:extend{
     updated = nil,
 }
 
+-- Never a real file on disk: gives the [Refresh Cloud] action entry a
+-- non-nil path (required by CoverBrowser's list/mosaic views, which call
+-- BookInfoManager:getBookInfo(item.path) on every file-type entry) without
+-- it ever resolving to actual content.
+local ACTION_ENTRY_FILENAME = ".remotelibrary_refresh_cloud_action"
+
+local function actionEntryPath(home_dir)
+    return home_dir .. "/" .. ACTION_ENTRY_FILENAME
+end
+
+local function isActionEntryPath(home_dir, path)
+    return home_dir ~= nil and path == actionEntryPath(home_dir)
+end
+
 local function canonicalizePath(path)
     if not path then return nil end
     local is_absolute = path:sub(1, 1) == "/"
@@ -311,6 +325,9 @@ function RemoteLibrary:init()
         return function(bi_self, file, book_props, no_open_document)
             local hdir = G_reader_settings:readSetting("home_dir") or Device.home_dir
             if hdir then
+                if isActionEntryPath(hdir, file) then
+                    return BookInfo.extendProps({ title = _("[Refresh Cloud]") }, file)
+                end
                 local proxy = RemoteMap.resolveProxy(hdir, file)
                 if proxy and proxy.mode == "file" then
                     logger.info("[RemoteLibrary] BookInfo:getDocProps intercepted proxy:", file)
@@ -328,6 +345,22 @@ function RemoteLibrary:init()
             return function(bim_self, filepath, get_cover)
                 local hdir = G_reader_settings:readSetting("home_dir") or Device.home_dir
                 if hdir then
+                    if isActionEntryPath(hdir, filepath) then
+                        return {
+                            directory = hdir,
+                            filename = ACTION_ENTRY_FILENAME,
+                            in_progress = 0,
+                            cover_fetched = "Y",
+                            has_meta = true,
+                            has_cover = nil,
+                            ignore_meta = false,
+                            ignore_cover = "Y",
+                            title = _("[Refresh Cloud]"),
+                            authors = nil,
+                            _is_directory = false,
+                            _no_provider = true,
+                        }
+                    end
                     local proxy = RemoteMap.resolveProxy(hdir, filepath)
                     if proxy and proxy.mode == "file" then
                         logger.info("[RemoteLibrary] BookInfoManager:getBookInfo intercepted proxy:", filepath)
@@ -358,6 +391,9 @@ function RemoteLibrary:init()
             return function(bim_self, filepath)
                 local hdir = G_reader_settings:readSetting("home_dir") or Device.home_dir
                 if hdir then
+                    if isActionEntryPath(hdir, filepath) then
+                        return BookInfo.extendProps({ title = _("[Refresh Cloud]") }, filepath)
+                    end
                     local proxy = RemoteMap.resolveProxy(hdir, filepath)
                     if proxy and proxy.mode == "file" then
                         logger.info("[RemoteLibrary] BookInfoManager:getDocProps intercepted proxy:", filepath)
@@ -410,7 +446,7 @@ function RemoteLibrary:hookFileChooser(fc)
                 -- other non-book file in the library.
                 table.insert(files, 1, {
                     text = _("[Refresh Cloud]"),
-                    path = home_dir .. "/.remotelibrary_refresh_cloud_action",
+                    path = actionEntryPath(home_dir),
                     is_file = true,
                     is_action = true,
                 })

@@ -1219,12 +1219,12 @@ return {
             -- Regression check for the crash CoverBrowser's list/mosaic views hit
             -- when an item has is_file = true but path = nil: BookInfoManager
             -- (patched by RemoteLibrary itself) must handle the action entry's
-            -- path without erroring, the same as it does for any other
-            -- unsupported/nonexistent file.
+            -- path without erroring, and show the friendly label rather than
+            -- the synthetic filename.
             local BookInfoManager = require("bookinfomanager")
-            assert.has_no.errors(function()
-                BookInfoManager:getBookInfo(files[1].path, false)
-            end)
+            local info = BookInfoManager:getBookInfo(files[1].path, false)
+            assert.is_table(info)
+            assert.equals("[Refresh Cloud]", info.title)
         end)
 
         it("re-pins the action entry to the front after genItemTable sorts the merged listing", function()
