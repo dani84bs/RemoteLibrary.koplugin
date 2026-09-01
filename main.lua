@@ -899,7 +899,11 @@ function RemoteLibrary:reloadRemoteLibrary()
     }
 
     progressbar_dialog:show()
-    UIManager:nextTick(function()
+    -- tickAfterNext (not nextTick): guarantees the dialog actually gets
+    -- painted before the scan starts. From the main-menu "Reload" entry this
+    -- was masked by the touch-menu's own close repaint, but triggered from
+    -- the file browser (no such incidental repaint) the dialog never showed.
+    UIManager:tickAfterNext(function()
         Scanner.scan(provider, cloudstorage_dir, callbacks, should_cancel)
     end)
 end
