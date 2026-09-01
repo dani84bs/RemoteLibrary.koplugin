@@ -213,6 +213,11 @@ local function getVirtualAttributes(map, rel_path)
     return nil
 end
 
+local function isProxyFile(map, rel_path)
+    local attr = getVirtualAttributes(map, rel_path)
+    return attr ~= nil and attr.mode == "file"
+end
+
 function RemoteLibrary:init()
     self.ui.menu:registerToMainMenu(self)
 
@@ -483,8 +488,11 @@ function RemoteLibrary:init()
             if hdir then
                 local rel_path = getRelativePath(hdir, file)
                 if rel_path and lfs.original_attributes(file, "mode") ~= "file" then
-                    logger.info("[RemoteLibrary] BookInfo:getDocProps intercepted proxy:", file)
-                    return BookInfo.extendProps(nil, file)
+                    local map = getRemoteLibraryMap()
+                    if map and isProxyFile(map, rel_path) then
+                        logger.info("[RemoteLibrary] BookInfo:getDocProps intercepted proxy:", file)
+                        return BookInfo.extendProps(nil, file)
+                    end
                 end
             end
             return original_getDocProps(bi_self, file, book_props, no_open_document)
@@ -502,24 +510,27 @@ function RemoteLibrary:init()
             if hdir then
                 local rel_path = getRelativePath(hdir, filepath)
                 if rel_path and lfs.original_attributes(filepath, "mode") ~= "file" then
-                    logger.info("[RemoteLibrary] BookInfoManager:getBookInfo intercepted proxy:", filepath)
-                    local directory, filename = util.splitFilePathName(filepath)
-                    local clean_filename = filename:gsub("^%[Cloud%]%s*", "")
-                    local filename_without_suffix = filemanagerutil.splitFileNameType(clean_filename)
-                    return {
-                        directory = directory,
-                        filename = filename,
-                        in_progress = 0,
-                        cover_fetched = "Y",
-                        has_meta = true,
-                        has_cover = nil,
-                        ignore_meta = false,
-                        ignore_cover = "Y",
-                        title = filename_without_suffix,
-                        authors = _("[Cloud]"),
-                        _is_directory = false,
-                        _no_provider = true
-                    }
+                    local map = getRemoteLibraryMap()
+                    if map and isProxyFile(map, rel_path) then
+                        logger.info("[RemoteLibrary] BookInfoManager:getBookInfo intercepted proxy:", filepath)
+                        local directory, filename = util.splitFilePathName(filepath)
+                        local clean_filename = filename:gsub("^%[Cloud%]%s*", "")
+                        local filename_without_suffix = filemanagerutil.splitFileNameType(clean_filename)
+                        return {
+                            directory = directory,
+                            filename = filename,
+                            in_progress = 0,
+                            cover_fetched = "Y",
+                            has_meta = true,
+                            has_cover = nil,
+                            ignore_meta = false,
+                            ignore_cover = "Y",
+                            title = filename_without_suffix,
+                            authors = _("[Cloud]"),
+                            _is_directory = false,
+                            _no_provider = true
+                        }
+                    end
                 end
             end
             return original_getBookInfo(bim_self, filepath, get_cover)
@@ -531,8 +542,11 @@ function RemoteLibrary:init()
             if hdir then
                 local rel_path = getRelativePath(hdir, filepath)
                 if rel_path and lfs.original_attributes(filepath, "mode") ~= "file" then
-                    logger.info("[RemoteLibrary] BookInfoManager:getDocProps intercepted proxy:", filepath)
-                    return BookInfo.extendProps(nil, filepath)
+                    local map = getRemoteLibraryMap()
+                    if map and isProxyFile(map, rel_path) then
+                        logger.info("[RemoteLibrary] BookInfoManager:getDocProps intercepted proxy:", filepath)
+                        return BookInfo.extendProps(nil, filepath)
+                    end
                 end
             end
             return original_bim_getDocProps(bim_self, filepath)

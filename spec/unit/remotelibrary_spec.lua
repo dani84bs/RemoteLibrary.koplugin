@@ -1946,7 +1946,7 @@ return {
             assert.equals("remote_book", props.display_title)
         end)
 
-        it("treats a locally-deleted, non-remote file as a proxy in BookInfo:getDocProps (documents pre-fix bug)", function()
+        it("falls through to original getDocProps for a locally-deleted, non-remote file in BookInfo:getDocProps", function()
             package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
             local spec_support = require("remotelibrary_spec_support")
 
@@ -1973,12 +1973,12 @@ return {
             restore_getDocProps()
             restore_flag()
 
-            assert.is_false(original_called)
+            assert.is_true(original_called)
             assert.is_table(props)
-            assert.equals("not_remote", props.display_title)
+            assert.equals("original", props.display_title)
         end)
 
-        it("treats a locally-deleted, non-remote file as a proxy in BookInfoManager:getBookInfo (documents pre-fix bug)", function()
+        it("falls through to original getBookInfo for a locally-deleted, non-remote file in BookInfoManager:getBookInfo", function()
             package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
             local spec_support = require("remotelibrary_spec_support")
 
@@ -2005,13 +2005,12 @@ return {
             restore_getBookInfo()
             restore_flag()
 
-            assert.is_false(original_called)
+            assert.is_true(original_called)
             assert.is_table(info)
-            assert.is_nil(info.marker)
-            assert.equals("not_remote", info.title)
+            assert.equals("original", info.marker)
         end)
 
-        it("treats a locally-deleted, non-remote file as a proxy in BookInfoManager:getDocProps (documents pre-fix bug)", function()
+        it("falls through to original getDocProps for a locally-deleted, non-remote file in BookInfoManager:getDocProps", function()
             package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
             local spec_support = require("remotelibrary_spec_support")
 
@@ -2038,10 +2037,9 @@ return {
             restore_getDocProps()
             restore_flag()
 
-            assert.is_false(original_called)
+            assert.is_true(original_called)
             assert.is_table(props)
-            assert.is_nil(props.marker)
-            assert.equals("not_remote", props.display_title)
+            assert.equals("original", props.marker)
         end)
     end)
 end)
