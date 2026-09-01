@@ -1,81 +1,59 @@
 # ☁️ RemoteLibrary KOReader Plugin
 
-[![KOReader](https://img.shields.io/badge/KOReader-Plugin-blueviolet.svg?style=for-the-badge)](https://github.com/koreader/koreader)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
-[![Lua](https://img.shields.io/badge/Lua-5.1%20%2F%20JIT-orange.svg?style=for-the-badge)](https://www.lua.org/)
+[![CI](https://github.com/dani84bs/RemoteLibrary.koplugin/actions/workflows/test.yml/badge.svg)](https://github.com/dani84bs/RemoteLibrary.koplugin/actions/workflows/test.yml)
+[![KOReader](https://img.shields.io/badge/KOReader-Plugin-blueviolet.svg)](https://github.com/koreader/koreader)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A feature-rich KOReader plugin designed to seamlessly overlay your remote cloud library on top of your local e-reader filesystem. With **RemoteLibrary**, you can browse, download, and open files from your cloud storage providers on-demand as if they were stored locally.
+RemoteLibrary overlays a cloud-storage library onto KOReader's local file browser, so you can see and open books that haven't been downloaded yet — as if they were already on the device.
 
----
+## Features
 
-## ✨ Key Features
+- **Transparent overlay** — remote folders and files appear inside the normal `FileChooser` view, tagged `[Cloud]`.
+- **On-demand downloads** — tap a `[Cloud]` file to download and open it; folders materialize as you navigate into them.
+- **Built on `cloudstorage`** — reuses KOReader's own cloud storage plugin, so any provider it supports (WebDAV, FTP, Dropbox, …) works here.
+- **Cached remote map** — the directory tree is scanned once and cached to `remotelibrary_map.lua` for instant, offline browsing. A WebDAV target uses a single-request fast scan when the server allows it, falling back to a per-folder scan otherwise.
+- **`[Refresh Cloud]` action entry** — a pinned row in the file browser that triggers a rescan without leaving the folder view.
+- **Metadata-safe** — patches KOReader's book info and cover lookups so proxy files never trigger a network fetch just to render a list.
 
-*   **🌐 Transparent Overlaying:** Displays remote folders and files seamlessly inside your local `FileChooser` view, marked with a clean `[Cloud]` prefix.
-*   **⚡ On-Demand Downloads:** Simply tap a remote file to download and open it instantly.
-*   **📁 Smart Directory Sync:** Integrates with KOReader's native `cloudstorage` plugin to support WebDAV, FTP, Dropbox, and other cloud providers.
-*   **🚀 Offline Maps:** Caches your remote library structure (`remotelibrary_map.lua`) for blazing-fast browsing without constant network requests.
-*   **🛠️ UI Extensions:** Directly hooks into KOReader's file manager settings and metadata providers to prevent unnecessary network overhead during file preview.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how the overlay is implemented, and [`CONTEXT.md`](CONTEXT.md) for the domain vocabulary (remote map, proxy, fast/slow scan, action entry).
 
----
+## Installation
 
-## 🛠️ How It Works (Architecture)
+Copy this folder into your KOReader plugins directory:
 
-```mermaid
-graph TD
-    A[FileChooser:getList] -->|Intercepts list| B{Check Local Directory}
-    B -->|Under home_dir| C[Query remotelibrary_map.lua]
-    B -->|Outside home_dir| D[Return Local Files Only]
-    C -->|Overlay| E["Add '[Cloud]' proxies for directories and files"]
-    E --> F[Display merged file list]
-    
-    F -->|"Tap on [Cloud] file"| G["Download & Open"]
-    G -->|Invoke| H[cloudstorage provider]
-    H -->|Saves file locally| I[Open via FileManager]
-```
-
-> [!NOTE]
-> The plugin uses Lua metatable extensions to patch standard KOReader widgets like `FileChooser`, `BookInfo`, and `BookInfoManager` dynamically. This ensures that metadata scanners do not block when encountering proxy files that haven't been downloaded yet.
-
----
-
-## ⚙️ Installation & Setup
-
-### 1. Copy to Plugins
-Place the `RemoteLibrary.koplugin` folder inside your KOReader plugins directory:
 ```bash
 koreader/plugins/RemoteLibrary.koplugin/
 ```
 
-### 2. Configure Cloud Storage
-1. Ensure the KOReader **Cloud storage** plugin is enabled.
-2. Add a cloud storage provider (e.g., WebDAV) inside KOReader.
-3. Open KOReader's Top Menu -> **Tools (gear icon)** -> **Remote Library** -> **Settings**.
-4. Tap **Cloudstorage directory** and select your desired provider/folder.
+## Setup
 
-### 3. Generate File Map
-To populate the overlay, tap **Reload** under the **Remote Library** menu. This scans your remote directory recursively and saves the mapping file.
+1. Enable KOReader's **Cloud storage** plugin and add a provider (WebDAV, FTP, …).
+2. Open KOReader's Tools menu → **Remote Library** → **Settings** → **Cloudstorage directory**, and pick the provider/folder to overlay.
+3. From the **Remote Library** menu, tap **Reload** to scan the remote directory and build the map. Use the file browser's `[Refresh Cloud]` entry any time you want to rescan without opening the menu.
 
----
+## Configuration files
 
-## 💾 Storage & Configuration Files
+Stored in KOReader's settings directory:
 
-All configuration files are kept safe inside the KOReader data storage folder:
-
-| File Name | Purpose |
+| File | Purpose |
 | :--- | :--- |
-| `remotelibrary.lua` | Stores the active Cloudstorage directory reference. |
-| `remotelibrary_map.lua` | The mapped remote directory tree structure. |
+| `remotelibrary.lua` | The configured cloudstorage directory. |
+| `remotelibrary_map.lua` | The cached remote directory tree. |
 
----
+## Testing
 
-## 🧪 Running Tests
-
-To verify code sanity and check for regressions, run:
+Unit tests run against a checked-out KOReader tree:
 
 ```bash
-./run_tests.sh
+./run_tests.sh <path_to_koreader_root>
 ```
 
----
+End-to-end tests exercise a real WebDAV server and are not wired into CI:
 
-*Made with ❤️ for KOReader.*
+```bash
+./run_e2e_tests.sh <path_to_koreader_root>
+```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
