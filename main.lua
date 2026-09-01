@@ -639,7 +639,7 @@ function RemoteLibrary:getSettingsSubMenuItems()
     local function openChooser(touchmenu_instance)
         if not self.ui.cloudstorage then
             UIManager:show(InfoMessage:new{
-                text = _("Cloud storage plugin is not enabled or available."),
+                text = providerErrorText("no_plugin"),
                 timeout = 3,
             })
             return
@@ -711,7 +711,7 @@ function RemoteLibrary:reloadRemoteLibrary()
     local function openChooser()
         if not self.ui.cloudstorage then
             UIManager:show(InfoMessage:new{
-                text = _("Cloud storage plugin is not enabled or available."),
+                text = providerErrorText("no_plugin"),
                 timeout = 3,
             })
             return
