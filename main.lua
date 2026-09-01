@@ -21,6 +21,7 @@ local filemanagerutil = require("apps/filemanager/filemanagerutil")
 local logger = require("logger")
 local RemoteMap = require("remotemap")
 local Scanner = require("scanner")
+local Provider = require("provider")
 
 local RemoteLibrary = WidgetContainer:extend{
     name = "remotelibrary",
@@ -502,6 +503,13 @@ function RemoteLibrary:hookFileChooser(fc)
     end
 end
 
+local function providerErrorText(reason)
+    if reason == "no_plugin" then
+        return _("Cloud storage plugin is not enabled or available.")
+    end
+    return _("Cloud storage provider not found.")
+end
+
 function RemoteLibrary:downloadRemoteFile(item, callback)
     self:loadSettings()
     local cloudstorage_dir = self.settings:readSetting("cloudstorage_dir")
@@ -514,30 +522,10 @@ function RemoteLibrary:downloadRemoteFile(item, callback)
         return
     end
 
-    local cloudstorage = self.ui.cloudstorage
-    if not cloudstorage then
-        local FileManager = require("apps/filemanager/filemanager")
-        if FileManager.instance then
-            cloudstorage = FileManager.instance.cloudstorage
-        end
-    end
-
-    if not cloudstorage then
-        UIManager:show(InfoMessage:new{
-            text = _("Cloud storage plugin is not enabled or available."),
-            timeout = 3,
-        })
-        if callback then callback(false) end
-        return
-    end
-
-    cloudstorage:getProviders()
-    cloudstorage:loadSettings()
-
-    local provider = cloudstorage.providers[cloudstorage_dir.type]
+    local provider, reason = Provider.resolve(self.ui, cloudstorage_dir)
     if not provider then
         UIManager:show(InfoMessage:new{
-            text = _("Cloud storage provider not found."),
+            text = providerErrorText(reason),
             timeout = 3,
         })
         if callback then callback(false) end
@@ -744,21 +732,10 @@ function RemoteLibrary:reloadRemoteLibrary()
         return
     end
 
-    if not self.ui.cloudstorage then
-        UIManager:show(InfoMessage:new{
-            text = _("Cloud storage plugin is not enabled or available."),
-            timeout = 3,
-        })
-        return
-    end
-
-    self.ui.cloudstorage:getProviders()
-    self.ui.cloudstorage:loadSettings()
-
-    local provider = self.ui.cloudstorage.providers[cloudstorage_dir.type]
+    local provider, reason = Provider.resolve(self.ui, cloudstorage_dir)
     if not provider then
         UIManager:show(InfoMessage:new{
-            text = _("Cloud storage provider not found."),
+            text = providerErrorText(reason),
             timeout = 3,
         })
         return

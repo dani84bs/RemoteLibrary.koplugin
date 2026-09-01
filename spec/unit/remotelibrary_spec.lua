@@ -571,6 +571,51 @@ describe("RemoteLibrary plugin", function()
         assert.is_false(callback_result)
     end)
 
+    it("falls back to FileManager.instance.cloudstorage when ui.cloudstorage is absent", function()
+        package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
+        local spec_support = require("remotelibrary_spec_support")
+        local UIManager = require("ui/uimanager")
+        local FileManager = require("apps/filemanager/filemanager")
+
+        local shown_infomsg = nil
+        local restore_show = spec_support.patch(UIManager, "show", function(self, widget)
+            if widget.text then shown_infomsg = widget.text end
+        end)
+
+        local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+
+        FileManager.instance = {
+            cloudstorage = {
+                getProviders = function() end,
+                loadSettings = function() end,
+                providers = {}
+            }
+        }
+
+        local mock_instance = spec_support.mockInstance(RemoteLibrary, {
+            ui = {},
+            settings = {
+                readSetting = function(self, key)
+                    if key == "cloudstorage_dir" then
+                        return { type = "unsupported_provider", url = "/books" }
+                    end
+                end
+            },
+            loadSettings = function() end
+        })
+
+        local callback_result
+        mock_instance:downloadRemoteFile({ text = "book.epub", path = "/books/book.epub" }, function(success)
+            callback_result = success
+        end)
+
+        FileManager.instance = nil
+        restore_show()
+
+        assert.match("Cloud storage provider not found.", shown_infomsg)
+        assert.is_false(callback_result)
+    end)
+
     it("shows 'Download failed' and removes the partial file when provider.downloadFile returns a non-200 code", function()
         package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
         local spec_support = require("remotelibrary_spec_support")
