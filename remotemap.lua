@@ -69,6 +69,44 @@ local function getNodeForRelativePath(map, rel_path)
     return node
 end
 
+local function serializeTable(tbl, indent)
+    indent = indent or ""
+    local parts = {}
+    table.insert(parts, "{\n")
+    local next_indent = indent .. "    "
+
+    if tbl.files and #tbl.files > 0 then
+        table.insert(parts, next_indent .. "files = {\n")
+        for _, file in ipairs(tbl.files) do
+            table.insert(parts, next_indent .. "    {\n")
+            table.insert(parts, string.format("%s        name = %q,\n", next_indent, file.name))
+            table.insert(parts, string.format("%s        url = %q,\n", next_indent, file.url))
+            if file.filesize then
+                table.insert(parts, string.format("%s        filesize = %d,\n", next_indent, file.filesize))
+            end
+            if file.modification then
+                table.insert(parts, string.format("%s        modification = %d,\n", next_indent, file.modification))
+            end
+            table.insert(parts, next_indent .. "    },\n")
+        end
+        table.insert(parts, next_indent .. "},\n")
+    else
+        table.insert(parts, next_indent .. "files = {},\n")
+    end
+
+    table.insert(parts, next_indent .. "folders = {\n")
+    if tbl.folders then
+        for folder_name, sub_tbl in pairs(tbl.folders) do
+            table.insert(parts, string.format("%s    [%q] = %s", next_indent, folder_name, serializeTable(sub_tbl, next_indent)))
+            table.insert(parts, ",\n")
+        end
+    end
+    table.insert(parts, next_indent .. "},\n")
+
+    table.insert(parts, indent .. "}")
+    return table.concat(parts)
+end
+
 local _cached_map = nil
 
 local function loadMap()
@@ -138,6 +176,21 @@ end
 
 function RemoteMap.invalidate()
     _cached_map = nil
+end
+
+-- Persists tree as the remote map and invalidates the read cache; the two
+-- are always done together, so save() folds invalidation in rather than
+-- leaving callers to remember to pair them.
+function RemoteMap.save(tree)
+    local map_file_path = DataStorage:getSettingsDir() .. "/remotelibrary_map.lua"
+    local file = io.open(map_file_path, "w")
+    if file then
+        file:write("return " .. serializeTable(tree) .. "\n")
+        file:close()
+        RemoteMap.invalidate()
+        return true
+    end
+    return false
 end
 
 -- Resolves path to proxy metadata, or nil if it isn't a proxy. A path that

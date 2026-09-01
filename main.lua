@@ -19,13 +19,8 @@ local util = require("util")
 local lfs = require("libs/libkoreader-lfs")
 local filemanagerutil = require("apps/filemanager/filemanagerutil")
 local logger = require("logger")
-local DocumentRegistry = require("document/documentregistry")
-local ffiUtil = require("ffi/util")
-local http = require("socket.http")
-local ltn12 = require("ltn12")
-local socket = require("socket")
-local socketutil = require("socketutil")
 local RemoteMap = require("remotemap")
+local Scanner = require("scanner")
 
 local RemoteLibrary = WidgetContainer:extend{
     name = "remotelibrary",
@@ -721,146 +716,6 @@ function RemoteLibrary:getSettingsSubMenuItems()
     }
 end
 
-local function trimSlashes(s)
-    local from = s:match("^/*()")
-    return from > #s and "" or s:match(".*[^/]", from)
-end
-
-local function rtrimSlashes(s)
-    local n = #s
-    while n > 0 and s:find("^/", n) do
-        n = n - 1
-    end
-    return s:sub(1, n)
-end
-
---[[--
-Attempts to fetch the entire remote WebDAV subtree in a single request via
-`PROPFIND` with `Depth: infinity`, instead of the one-request-per-folder
-crawl. Not all WebDAV servers support infinite depth (some return 403, some
-silently cap it), so any failure here should fall back to the regular crawl.
-
-Returns the populated tree, folder_count, file_count on success, or nil on
-any failure (caller falls back to the per-folder crawl).
---]]--
-local function tryWebDavDeepScan(cloudstorage_dir)
-    local address = cloudstorage_dir.address
-    if not address then return nil end
-
-    local root_path = trimSlashes(cloudstorage_dir.url or "")
-    local base_address = rtrimSlashes(address)
-    local request_url = base_address .. "/" .. util.urlEncode(root_path, "/")
-    if request_url:sub(-1) ~= "/" then
-        request_url = request_url .. "/"
-    end
-    local request_url_path = trimSlashes(util.urlDecode(request_url:match("^https?://[^/]*(.*)$") or request_url))
-
-    local sink = {}
-    local data = [[<?xml version="1.0"?><a:propfind xmlns:a="DAV:"><a:prop><a:resourcetype/><a:getcontentlength/><a:getlastmodified/></a:prop></a:propfind>]]
-    socketutil:set_timeout(socketutil.FILE_BLOCK_TIMEOUT, socketutil.FILE_TOTAL_TIMEOUT)
-    local ok, code, headers, status = pcall(function()
-        return socket.skip(1, http.request{
-            url      = request_url,
-            method   = "PROPFIND",
-            headers  = {
-                ["Content-Type"]   = "application/xml",
-                ["Depth"]          = "infinity",
-                ["Content-Length"] = #data,
-            },
-            user     = cloudstorage_dir.username,
-            password = cloudstorage_dir.password,
-            source   = ltn12.source.string(data),
-            sink     = ltn12.sink.table(sink),
-        })
-    end)
-    socketutil:reset_timeout()
-
-    if not ok or not headers or not code or code < 200 or code > 299 then
-        logger.dbg("[RemoteLibrary] Depth:infinity PROPFIND failed, falling back to per-folder crawl:", status or code)
-        return nil
-    end
-
-    local res = table.concat(sink)
-    if res == "" then return nil end
-
-    local show_unsupported = G_reader_settings:isTrue("show_unsupported")
-    local entries = {}
-    for item in res:gmatch("<[^:]*:response[^>]*>(.-)</[^:]*:response>") do
-        local item_fullpath = util.urlDecode(item:match("<[^:]*:href[^>]*>(.*)</[^:]*:href>"))
-        if item_fullpath then
-            local item_path = trimSlashes(item_fullpath)
-            if item_path ~= request_url_path then
-                local item_name = ffiUtil.basename(util.htmlEntitiesToUtf8(item_fullpath))
-                local is_not_collection = item:find("<[^:]*:resourcetype%s*/>") or
-                                          item:find("<[^:]*:resourcetype></[^:]*:resourcetype>")
-                if is_not_collection then
-                    if show_unsupported or DocumentRegistry:hasProvider(item_name) then
-                        table.insert(entries, {
-                            path = item_path,
-                            is_file = true,
-                            name = item_name,
-                            filesize = tonumber(item:match("<[^:]*:getcontentlength[^>]*>(%d+)</[^:]*:getcontentlength>")),
-                        })
-                    end
-                elseif item:find("<[^:]*:collection[^<]*/>") then
-                    table.insert(entries, {
-                        path = item_path,
-                        is_folder = true,
-                        name = item_name,
-                    })
-                end
-            end
-        end
-    end
-
-    -- Sort by path depth so parent folders are always created before their children.
-    table.sort(entries, function(a, b)
-        local depth_a, depth_b = select(2, a.path:gsub("/", "")), select(2, b.path:gsub("/", ""))
-        return depth_a < depth_b
-    end)
-
-    local root_node = { files = {}, folders = {} }
-    local prefix = request_url_path == "" and "" or (request_url_path .. "/")
-    local folder_count = 0
-    local file_count = 0
-
-    for _, entry in ipairs(entries) do
-        local relative = entry.path
-        if prefix ~= "" then
-            if relative:sub(1, #prefix) ~= prefix then
-                relative = nil -- outside of the scanned root, skip
-            else
-                relative = relative:sub(#prefix + 1)
-            end
-        end
-        if relative and relative ~= "" then
-            local node = root_node
-            local segments = {}
-            for segment in relative:gmatch("[^/]+") do
-                table.insert(segments, segment)
-            end
-            local last_index = entry.is_file and (#segments - 1) or #segments
-            for i = 1, last_index do
-                local seg = segments[i]
-                node.folders[seg] = node.folders[seg] or { files = {}, folders = {} }
-                node = node.folders[seg]
-            end
-            if entry.is_file then
-                table.insert(node.files, {
-                    name = entry.name,
-                    url = entry.path,
-                    filesize = entry.filesize,
-                })
-                file_count = file_count + 1
-            else
-                folder_count = folder_count + 1
-            end
-        end
-    end
-
-    return root_node, folder_count, file_count
-end
-
 function RemoteLibrary:reloadRemoteLibrary()
     self:loadSettings()
     local cloudstorage_dir = self.settings:readSetting("cloudstorage_dir")
@@ -909,8 +764,6 @@ function RemoteLibrary:reloadRemoteLibrary()
         return
     end
 
-    provider.base = cloudstorage_dir
-
     local is_cancelled = false
     local progressbar_dialog
     progressbar_dialog = ProgressbarDialog:new{
@@ -923,145 +776,42 @@ function RemoteLibrary:reloadRemoteLibrary()
         end,
     }
 
-    local root_node = { files = {}, folders = {} }
-    local queue = { { url = cloudstorage_dir.url, node = root_node } }
-    local folder_count = 0
-    local file_count = 0
-
-    local function serializeTable(tbl, indent)
-        indent = indent or ""
-        local parts = {}
-        table.insert(parts, "{\n")
-        local next_indent = indent .. "    "
-
-        if tbl.files and #tbl.files > 0 then
-            table.insert(parts, next_indent .. "files = {\n")
-            for _, file in ipairs(tbl.files) do
-                table.insert(parts, next_indent .. "    {\n")
-                table.insert(parts, string.format("%s        name = %q,\n", next_indent, file.name))
-                table.insert(parts, string.format("%s        url = %q,\n", next_indent, file.url))
-                if file.filesize then
-                    table.insert(parts, string.format("%s        filesize = %d,\n", next_indent, file.filesize))
-                end
-                if file.modification then
-                    table.insert(parts, string.format("%s        modification = %d,\n", next_indent, file.modification))
-                end
-                table.insert(parts, next_indent .. "    },\n")
-            end
-            table.insert(parts, next_indent .. "},\n")
-        else
-            table.insert(parts, next_indent .. "files = {},\n")
-        end
-
-        table.insert(parts, next_indent .. "folders = {\n")
-        if tbl.folders then
-            for folder_name, sub_tbl in pairs(tbl.folders) do
-                table.insert(parts, string.format("%s    [%q] = %s", next_indent, folder_name, serializeTable(sub_tbl, next_indent)))
-                table.insert(parts, ",\n")
-            end
-        end
-        table.insert(parts, next_indent .. "},\n")
-
-        table.insert(parts, indent .. "}")
-        return table.concat(parts)
+    local function should_cancel()
+        return is_cancelled
     end
 
-    local function saveMap()
-        local map_file_path = DataStorage:getSettingsDir() .. "/remotelibrary_map.lua"
-        local file = io.open(map_file_path, "w")
-        if file then
-            file:write("return " .. serializeTable(root_node) .. "\n")
-            file:close()
-            return true
-        end
-        return false
-    end
-
-    local function processQueue()
-        if is_cancelled then
+    local callbacks = {
+        on_progress = function(folder_count, file_count)
+            local progress_text = string.format(_("%d folders, %d files"), folder_count, file_count)
+            if progressbar_dialog[1] and progressbar_dialog[1][1] and progressbar_dialog[1][1][2] then
+                progressbar_dialog[1][1][2]:setText(progress_text)
+                progressbar_dialog:redrawProgressbar()
+            end
+        end,
+        on_done = function(tree, folder_count, file_count, cancelled)
             progressbar_dialog:close()
-            if folder_count > 0 or file_count > 0 then
-                saveMap()
-                RemoteMap.invalidate()
+            if cancelled and folder_count == 0 and file_count == 0 then
+                return
+            end
+            RemoteMap.save(tree)
+            if cancelled then
                 UIManager:show(InfoMessage:new{
                     text = string.format(_("Reload cancelled: %d folders and %d files mapped so far."), folder_count, file_count),
                     timeout = 4,
                 })
-            end
-            return
-        end
-
-        if #queue == 0 then
-            progressbar_dialog:close()
-            saveMap()
-            RemoteMap.invalidate()
-            UIManager:show(InfoMessage:new{
-                text = string.format(_("Reload complete: %d folders and %d files mapped."), folder_count, file_count),
-                timeout = 4,
-            })
-            return
-        end
-
-        local current = table.remove(queue, 1)
-
-        local progress_text = string.format(_("%d folders, %d files"), folder_count, file_count)
-        if progressbar_dialog[1] and progressbar_dialog[1][1] and progressbar_dialog[1][1][2] then
-            progressbar_dialog[1][1][2]:setText(progress_text)
-            progressbar_dialog:redrawProgressbar()
-        end
-
-        provider.run(function()
-            local items = provider.listFolder(current.url, true)
-            if items then
-                for _, item in ipairs(items) do
-                    if item.is_file then
-                        table.insert(current.node.files, {
-                            name = item.text,
-                            url = item.url,
-                            filesize = item.filesize,
-                            modification = item.modification,
-                        })
-                        file_count = file_count + 1
-                    elseif item.is_folder then
-                        current.node.folders[item.text] = { files = {}, folders = {} }
-                        table.insert(queue, {
-                            url = item.url,
-                            node = current.node.folders[item.text]
-                        })
-                        folder_count = folder_count + 1
-                    end
-                end
-            end
-            UIManager:nextTick(processQueue)
-        end)
-    end
-
-    local function startScan()
-        if is_cancelled then
-            progressbar_dialog:close()
-            return
-        end
-        if cloudstorage_dir.type == "webdav" and cloudstorage_dir.address then
-            local ok, tree, deep_folder_count, deep_file_count = pcall(tryWebDavDeepScan, cloudstorage_dir)
-            if ok and tree then
-                root_node = tree
-                folder_count = deep_folder_count
-                file_count = deep_file_count
-                progressbar_dialog:close()
-                saveMap()
-                RemoteMap.invalidate()
+            else
                 UIManager:show(InfoMessage:new{
                     text = string.format(_("Reload complete: %d folders and %d files mapped."), folder_count, file_count),
                     timeout = 4,
                 })
-                return
             end
-        end
-        processQueue()
-    end
+        end,
+    }
 
     progressbar_dialog:show()
-    UIManager:nextTick(startScan)
+    UIManager:nextTick(function()
+        Scanner.scan(provider, cloudstorage_dir, callbacks, should_cancel)
+    end)
 end
 
 function RemoteLibrary:addToMainMenu(menu_items)
