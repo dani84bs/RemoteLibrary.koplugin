@@ -16,8 +16,8 @@ describe("Provider", function()
     end)
 
     local function loadProvider()
-        package.loaded["plugins/RemoteLibrary.koplugin/provider.lua"] = nil
-        return dofile("plugins/RemoteLibrary.koplugin/provider.lua")
+        package.loaded["plugins/RemoteLibrary.koplugin/remotelibrary_provider.lua"] = nil
+        return dofile("plugins/RemoteLibrary.koplugin/remotelibrary_provider.lua")
     end
 
     it("resolves the provider via ui.cloudstorage", function()

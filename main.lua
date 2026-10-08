@@ -21,7 +21,7 @@ local filemanagerutil = require("apps/filemanager/filemanagerutil")
 local logger = require("logger")
 local RemoteMap = require("remotemap")
 local Scanner = require("scanner")
-local Provider = require("provider")
+local Provider = require("remotelibrary_provider")
 
 local RemoteLibrary = WidgetContainer:extend{
     name = "remotelibrary",
