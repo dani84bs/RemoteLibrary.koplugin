@@ -19,8 +19,8 @@ local util = require("util")
 local lfs = require("libs/libkoreader-lfs")
 local filemanagerutil = require("apps/filemanager/filemanagerutil")
 local logger = require("logger")
-local RemoteMap = require("remotemap")
-local Scanner = require("scanner")
+local RemoteMap = require("remotelibrary_remotemap")
+local Scanner = require("remotelibrary_scanner")
 local Provider = require("remotelibrary_provider")
 
 local RemoteLibrary = WidgetContainer:extend{

@@ -20,8 +20,8 @@ describe("Scanner", function()
     end
 
     local function loadScanner()
-        package.loaded["plugins/RemoteLibrary.koplugin/scanner.lua"] = nil
-        return dofile("plugins/RemoteLibrary.koplugin/scanner.lua")
+        package.loaded["plugins/RemoteLibrary.koplugin/remotelibrary_scanner.lua"] = nil
+        return dofile("plugins/RemoteLibrary.koplugin/remotelibrary_scanner.lua")
     end
 
     it("crawls the provider folder-by-folder and reports the built tree", function()

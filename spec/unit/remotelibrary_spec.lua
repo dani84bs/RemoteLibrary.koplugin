@@ -80,7 +80,7 @@ describe("RemoteLibrary plugin", function()
         package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
         local spec_support = require("remotelibrary_spec_support")
         local UIManager = require("ui/uimanager")
-        local Scanner = require("scanner")
+        local Scanner = require("remotelibrary_scanner")
 
         local shown_infomsg = nil
         local restore_show = spec_support.patch(UIManager, "show", function(self, widget)
@@ -159,7 +159,7 @@ describe("RemoteLibrary plugin", function()
         package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
         local spec_support = require("remotelibrary_spec_support")
         local UIManager = require("ui/uimanager")
-        local Scanner = require("scanner")
+        local Scanner = require("remotelibrary_scanner")
 
         local restore_show = spec_support.patch(UIManager, "show", function() end)
         local restore_nextTick = spec_support.patch(UIManager, "nextTick", function(self, callback) callback() end)
@@ -224,7 +224,7 @@ describe("RemoteLibrary plugin", function()
         package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
         local spec_support = require("remotelibrary_spec_support")
         local UIManager = require("ui/uimanager")
-        local Scanner = require("scanner")
+        local Scanner = require("remotelibrary_scanner")
 
         local restore_show = spec_support.patch(UIManager, "show", function() end)
         local restore_nextTick = spec_support.patch(UIManager, "nextTick", function(self, callback) callback() end)
@@ -282,7 +282,7 @@ describe("RemoteLibrary plugin", function()
         package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
         local spec_support = require("remotelibrary_spec_support")
         local UIManager = require("ui/uimanager")
-        local Scanner = require("scanner")
+        local Scanner = require("remotelibrary_scanner")
 
         local restore_show = spec_support.patch(UIManager, "show", function() end)
         local restore_nextTick = spec_support.patch(UIManager, "nextTick", function(self, callback) callback() end)
@@ -339,7 +339,7 @@ describe("RemoteLibrary plugin", function()
         package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
         local spec_support = require("remotelibrary_spec_support")
         local UIManager = require("ui/uimanager")
-        local Scanner = require("scanner")
+        local Scanner = require("remotelibrary_scanner")
 
         local shown_infomsg = nil
         local restore_show = spec_support.patch(UIManager, "show", function(self, widget)
@@ -411,7 +411,7 @@ describe("RemoteLibrary plugin", function()
         package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
         local spec_support = require("remotelibrary_spec_support")
         local UIManager = require("ui/uimanager")
-        local Scanner = require("scanner")
+        local Scanner = require("remotelibrary_scanner")
 
         local shown_infomsg = nil
         local restore_show = spec_support.patch(UIManager, "show", function(self, widget)
@@ -915,7 +915,7 @@ describe("RemoteLibrary plugin", function()
         local spec_support = require("remotelibrary_spec_support")
         local UIManager = require("ui/uimanager")
         local DataStorage = require("datastorage")
-        local Scanner = require("scanner")
+        local Scanner = require("remotelibrary_scanner")
 
         local shown_infomsg = nil
         local restore_show = spec_support.patch(UIManager, "show", function(self, widget)
