@@ -29,6 +29,9 @@ for file in "${FILES[@]}"; do
     fi
 done
 
+source "$PLUGIN_DIR/spec/spec_links.sh"
+refuse_spec_collisions "$PLUGIN_SPEC_DIR" "$SPEC_DST_DIR" "${FILES[@]}"
+
 # Fixed host/port/credentials: single local dev environment, no parallel
 # workers, so a hardcoded address is simpler than threading a dynamic one
 # through env vars.
@@ -94,11 +97,7 @@ cleanup() {
     rm -rf "$WEBDAV_DATA_DIR"
 
     echo ">> Cleaning up symlinks in $SPEC_DST_DIR..."
-    for file in "${FILES[@]}"; do
-        if [ -L "$SPEC_DST_DIR/$file" ]; then
-            rm "$SPEC_DST_DIR/$file"
-        fi
-    done
+    unlink_specs "$PLUGIN_SPEC_DIR" "$SPEC_DST_DIR" "${FILES[@]}"
 }
 
 # Ensure cleanup happens on exit
@@ -110,9 +109,7 @@ echo ">> Seeding WebDAV fixtures..."
 cp "$REMOTELIBRARY_E2E_FIXTURES_DIR"/*.txt "$WEBDAV_DATA_DIR/"
 
 echo ">> Linking RemoteLibrary e2e specs into $SPEC_DST_DIR..."
-for file in "${FILES[@]}"; do
-    ln -sf "$PLUGIN_SPEC_DIR/$file" "$SPEC_DST_DIR/$file"
-done
+link_specs "$PLUGIN_SPEC_DIR" "$SPEC_DST_DIR" "${FILES[@]}"
 
 echo ">> Executing e2e tests: ${TEST_NAMES[*]}..."
 cd "$KO_DIR"

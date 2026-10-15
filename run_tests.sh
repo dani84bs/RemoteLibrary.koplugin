@@ -28,23 +28,20 @@ for file in "${FILES[@]}"; do
     fi
 done
 
+source "$PLUGIN_DIR/spec/spec_links.sh"
+refuse_spec_collisions "$PLUGIN_SPEC_DIR" "$SPEC_DST_DIR" "${FILES[@]}"
+
 cleanup() {
     echo ""
     echo ">> Cleaning up symlinks in $SPEC_DST_DIR..."
-    for file in "${FILES[@]}"; do
-        if [ -L "$SPEC_DST_DIR/$file" ]; then
-            rm "$SPEC_DST_DIR/$file"
-        fi
-    done
+    unlink_specs "$PLUGIN_SPEC_DIR" "$SPEC_DST_DIR" "${FILES[@]}"
 }
 
 # Ensure cleanup happens on exit
 trap cleanup EXIT
 
 echo ">> Linking RemoteLibrary specs into $SPEC_DST_DIR..."
-for file in "${FILES[@]}"; do
-    ln -sf "$PLUGIN_SPEC_DIR/$file" "$SPEC_DST_DIR/$file"
-done
+link_specs "$PLUGIN_SPEC_DIR" "$SPEC_DST_DIR" "${FILES[@]}"
 
 echo ">> Executing tests: ${TEST_NAMES[*]}..."
 cd "$KO_DIR"
