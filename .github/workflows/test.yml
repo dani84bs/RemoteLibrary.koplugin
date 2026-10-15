@@ -18,6 +18,16 @@ defaults:
     shell: bash
 
 jobs:
+  runner-checks:
+    name: "Check Test Runner Scripts"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout RemoteLibrary Plugin
+        uses: actions/checkout@v4
+
+      - name: Run Test Runner Collision Checks
+        run: ./spec/run_tests_collision_test.sh
+
   test:
     name: "Run RemoteLibrary Integration Tests"
     runs-on: ubuntu-latest
