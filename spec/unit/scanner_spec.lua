@@ -281,6 +281,49 @@ describe("Scanner", function()
         assert.is_false(done_cancelled)
         assert.equals("book1.epub", done_tree.files[1].name)
         assert.equals("book2.epub", done_tree.folders["fiction"].files[1].name)
+        -- urls are relative to the address (https://example.com/dav), like
+        -- the per-folder crawl produces, so downloads don't hit /dav/dav/...
+        assert.equals("books/book1.epub", done_tree.files[1].url)
+        assert.equals("books/fiction/book2.epub", done_tree.folders["fiction"].files[1].url)
+    end)
+
+    it("keeps deep-scan urls unchanged when the address has no path", function()
+        local UIManager = require("ui/uimanager")
+        local restore_nextTick = spec_support.patch(UIManager, "nextTick", function(self, callback) callback() end)
+
+        local restore_http = spec_support.patch(package.loaded, "socket.http", {
+            request = function(req)
+                local body = table.concat({
+                    [[<?xml version="1.0"?><d:multistatus xmlns:d="DAV:">]],
+                    [[<d:response><d:href>/books/</d:href><d:propstat><d:prop>]],
+                    [[<d:resourcetype><d:collection/></d:resourcetype></d:prop></d:propstat></d:response>]],
+                    [[<d:response><d:href>/books/book1.epub</d:href><d:propstat><d:prop>]],
+                    [[<d:resourcetype/><d:getcontentlength>1024</d:getcontentlength></d:prop></d:propstat></d:response>]],
+                    [[</d:multistatus>]],
+                })
+                req.sink(body)
+                req.sink(nil)
+                return 1, 207, { ["content-type"] = "application/xml" }, "HTTP/1.1 207 Multi-Status"
+            end
+        })
+
+        local Scanner = loadScanner()
+
+        local provider = {
+            run = function(callback) callback() end,
+            listFolder = function() return {} end
+        }
+
+        local done_tree
+        Scanner.scan(provider, { type = "webdav", url = "/books", address = "https://example.com" }, {
+            on_progress = function() end,
+            on_done = function(tree) done_tree = tree end,
+        }, neverCancel)
+
+        restore_nextTick()
+        restore_http()
+
+        assert.equals("books/book1.epub", done_tree.files[1].url)
     end)
 
     it("falls back to the per-folder crawl when the PROPFIND deep-scan fails", function()

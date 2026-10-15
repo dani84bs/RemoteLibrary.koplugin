@@ -43,6 +43,7 @@ local function tryWebDavDeepScan(cloudstorage_dir)
         request_url = request_url .. "/"
     end
     local request_url_path = trimSlashes(util.urlDecode(request_url:match("^https?://[^/]*(.*)$") or request_url))
+    local address_path = trimSlashes(util.urlDecode(base_address:match("^https?://[^/]*(.*)$") or ""))
 
     local sink = {}
     local data = [[<?xml version="1.0"?><a:propfind xmlns:a="DAV:"><a:prop><a:resourcetype/><a:getcontentlength/><a:getlastmodified/></a:prop></a:propfind>]]
@@ -135,9 +136,16 @@ local function tryWebDavDeepScan(cloudstorage_dir)
                 node = node.folders[seg]
             end
             if entry.is_file then
+                -- hrefs are server-absolute ("dav/books/x.epub") but the
+                -- provider joins urls onto the address ("https://host/dav"),
+                -- so store them relative to the address like the slow scan does.
+                local url = entry.path
+                if address_path ~= "" and url:sub(1, #address_path + 1) == address_path .. "/" then
+                    url = url:sub(#address_path + 2)
+                end
                 table.insert(node.files, {
                     name = entry.name,
-                    url = entry.path,
+                    url = url,
                     filesize = entry.filesize,
                 })
                 file_count = file_count + 1
