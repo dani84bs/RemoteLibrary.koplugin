@@ -59,7 +59,7 @@ The plugin hooks into the following modules during its initialization in `Remote
 * **Mechanism**:
   - **`getList`**: Post-processes the merged items from LFS. Virtual directories and files are marked as `is_proxy = true` and their labels are prepended with `[Cloud]`.
   - **`changeToPath`**: If a user enters a virtual directory, the hook pre-emptively creates the physical parent directories on disk using `makePhysicalPath` (via standard `lfs.mkdir`) so that KOReader has a physical path to navigate into.
-  - **`onFileSelect`**: Intercepts tapping on a proxy file. If KOReader is in multi-file selection mode, it displays an error message stating that batch operations on proxy files are not supported. If in standard mode, it prompts the user to download the file.
+  - **`onFileSelect`**: Intercepts tapping on a proxy file. If KOReader is in multi-file selection mode, it displays an error message stating that batch operations on proxy files are not supported. If in standard mode, it prompts the user to either "Download & open" the file or just "Download" it (confirmed with a short "Downloaded" message, without opening).
   - **`showFileDialog`**: Blocks the long-press options dialog (properties, delete, rename, etc.) on remote proxy files by returning `true` immediately.
 
 ### 4. Metadata and Cover Previews (`bookinfomanager` & `filemanagerbookinfo`)
@@ -130,7 +130,7 @@ sequenceDiagram
     Note over FC: Intercepted via onFileSelect hook
     
     FC->>User: Show Confirm Box ("Would you like to download Book.epub?")
-    User->>FC: Confirm "Download"
+    User->>FC: Confirm "Download & open"
     
     FC->>PL: downloadAndOpenFile(item)
     PL->>PL: loadSettings() (Retrieve server info)

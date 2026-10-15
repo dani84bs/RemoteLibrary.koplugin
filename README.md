@@ -9,7 +9,7 @@ RemoteLibrary overlays a cloud-storage library onto KOReader's local file browse
 ## Features
 
 - **Transparent overlay** — remote folders and files appear inside the normal `FileChooser` view, tagged `[Cloud]`.
-- **On-demand downloads** — tap a `[Cloud]` file to download and open it; folders materialize as you navigate into them.
+- **On-demand downloads** — tap a `[Cloud]` file to download and open it, or just download it for later; folders materialize as you navigate into them.
 - **Built on `cloudstorage`** — reuses KOReader's own cloud storage plugin, so any provider it supports (WebDAV, FTP, Dropbox, …) works here.
 - **Cached remote map** — the directory tree is scanned once and cached to `remotelibrary_map.lua` for instant, offline browsing. A WebDAV target uses a single-request fast scan when the server allows it, falling back to a per-folder scan otherwise.
 - **`[Refresh Cloud]` action entry** — a pinned row in the file browser that triggers a rescan without leaving the folder view.

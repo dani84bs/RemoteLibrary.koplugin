@@ -690,6 +690,76 @@ describe("RemoteLibrary plugin", function()
         assert.is_false(open_called)
     end)
 
+    it("downloads without opening and confirms with the clean filename on success", function()
+        package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
+        local spec_support = require("remotelibrary_spec_support")
+        local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+        local UIManager = require("ui/uimanager")
+        local filemanagerutil = require("apps/filemanager/filemanagerutil")
+
+        local open_called = false
+        local restore_openFile = spec_support.patch(filemanagerutil, "openFile", function()
+            open_called = true
+        end)
+        local shown
+        local restore_show = spec_support.patch(UIManager, "show", function(_, widget)
+            shown = widget
+        end)
+
+        local download_called_with
+        local mock_instance = spec_support.mockInstance(RemoteLibrary, {
+            ui = { fake_ui = true },
+            downloadRemoteFile = function(_, item, callback)
+                download_called_with = item
+                callback(true)
+            end
+        })
+
+        local item = { path = "/books/remote_book.epub", text = "remote_book.epub [Cloud]" }
+        mock_instance:downloadFileOnly(item)
+
+        restore_show()
+        restore_openFile()
+
+        assert.equals(item, download_called_with)
+        assert.is_false(open_called)
+        assert.is_not_nil(shown)
+        assert.equals("Downloaded remote_book.epub", shown.text)
+        assert.equals(2, shown.timeout)
+    end)
+
+    it("shows no confirmation when a download-only fails or is cancelled", function()
+        package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
+        local spec_support = require("remotelibrary_spec_support")
+        local RemoteLibrary = dofile("plugins/RemoteLibrary.koplugin/main.lua")
+        local UIManager = require("ui/uimanager")
+        local filemanagerutil = require("apps/filemanager/filemanagerutil")
+
+        local open_called = false
+        local restore_openFile = spec_support.patch(filemanagerutil, "openFile", function()
+            open_called = true
+        end)
+        local shown
+        local restore_show = spec_support.patch(UIManager, "show", function(_, widget)
+            shown = widget
+        end)
+
+        local mock_instance = spec_support.mockInstance(RemoteLibrary, {
+            ui = { fake_ui = true },
+            downloadRemoteFile = function(_, _, callback)
+                callback(false)
+            end
+        })
+
+        mock_instance:downloadFileOnly({ path = "/books/remote_book.epub", text = "remote_book.epub [Cloud]" })
+
+        restore_show()
+        restore_openFile()
+
+        assert.is_false(open_called)
+        assert.is_nil(shown)
+    end)
+
     it("shows 'Cloud storage provider not found.' when downloadRemoteFile has a missing/unsupported provider type", function()
         package.path = package.path .. ";plugins/RemoteLibrary.koplugin/spec/unit/?.lua"
         local spec_support = require("remotelibrary_spec_support")
@@ -1474,12 +1544,13 @@ return {
                 showFileDialog = function() end,
                 ui = {},
             }
-            local download_called = false
+            local download_and_open_item, download_only_item
             local plugin_instance = setmetatable({
                 ui = { menu = { registerToMainMenu = function() end } },
                 settings = { readSetting = function() return nil end },
                 loadSettings = function() end,
-                downloadAndOpenFile = function() download_called = true end
+                downloadAndOpenFile = function(_, item) download_and_open_item = item end,
+                downloadFileOnly = function(_, item) download_only_item = item end,
             }, { __index = RemoteLibrary })
 
             plugin_instance:hookFileChooser(mock_fc)
@@ -1491,11 +1562,20 @@ return {
 
             assert.is_not_nil(dialog_shown)
             assert.equals("Would you like to download book.epub?", dialog_shown.text)
-            assert.equals("Download", dialog_shown.ok_text)
+            assert.equals("Download & open", dialog_shown.ok_text)
             assert.equals("Cancel", dialog_shown.cancel_text)
+            assert.is_falsy(dialog_shown.other_buttons_first)
+            assert.equals(1, #dialog_shown.other_buttons)
+            assert.equals(1, #dialog_shown.other_buttons[1])
+            local download_button = dialog_shown.other_buttons[1][1]
+            assert.equals("Download", download_button.text)
+
+            download_button.callback()
+            assert.equals(proxy_item, download_only_item)
+            assert.is_nil(download_and_open_item)
 
             dialog_shown.ok_callback()
-            assert.is_true(download_called)
+            assert.equals(proxy_item, download_and_open_item)
         end)
 
         it("does not intercept onFileSelect for proxy folders", function()

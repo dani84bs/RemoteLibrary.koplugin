@@ -45,6 +45,10 @@ local function isActionEntryPath(home_dir, path)
     return home_dir ~= nil and path == actionEntryPath(home_dir)
 end
 
+local function stripCloudTag(text)
+    return (text:gsub("%s*%[Cloud%]$", ""))
+end
+
 local function canonicalizePath(path)
     if not path then return nil end
     local is_absolute = path:sub(1, 1) == "/"
@@ -365,7 +369,7 @@ function RemoteLibrary:init()
                     if proxy and proxy.mode == "file" then
                         logger.info("[RemoteLibrary] BookInfoManager:getBookInfo intercepted proxy:", filepath)
                         local directory, filename = util.splitFilePathName(filepath)
-                        local clean_filename = filename:gsub("%s*%[Cloud%]$", "")
+                        local clean_filename = stripCloudTag(filename)
                         local filename_without_suffix = filemanagerutil.splitFileNameType(clean_filename)
                         return {
                             directory = directory,
@@ -549,14 +553,21 @@ function RemoteLibrary:hookFileChooser(fc)
                     })
                     return true
                 else
-                    local clean_filename = item.text:gsub("%s*%[Cloud%]$", "")
                     UIManager:show(ConfirmBox:new{
-                        text = string.format(_("Would you like to download %s?"), clean_filename),
-                        ok_text = _("Download"),
+                        text = string.format(_("Would you like to download %s?"), stripCloudTag(item.text)),
+                        ok_text = _("Download & open"),
                         cancel_text = _("Cancel"),
                         ok_callback = function()
                             self:downloadAndOpenFile(item)
                         end,
+                        other_buttons = {{
+                            {
+                                text = _("Download"),
+                                callback = function()
+                                    self:downloadFileOnly(item)
+                                end,
+                            },
+                        }},
                     })
                     return true
                 end
@@ -613,7 +624,7 @@ function RemoteLibrary:downloadRemoteFile(item, callback)
 
     local progressbar_dialog = ProgressbarDialog:new{
         title = _("Downloading remote file…"),
-        subtitle = item.text:gsub("%s*%[Cloud%]$", ""),
+        subtitle = stripCloudTag(item.text),
         progress_max = item.filesize or 0,
         dismissable = true,
         dismiss_text = _("Do you want to cancel downloading?"),
@@ -675,7 +686,7 @@ function RemoteLibrary:downloadRemoteFile(item, callback)
         else
             os.remove(target_path)
             UIManager:show(InfoMessage:new{
-                text = string.format(_("Download failed: %s"), item.text:gsub("%s*%[Cloud%]$", "")),
+                text = string.format(_("Download failed: %s"), stripCloudTag(item.text)),
                 timeout = 3,
             })
             if callback then callback(false) end
@@ -687,6 +698,17 @@ function RemoteLibrary:downloadAndOpenFile(item)
     self:downloadRemoteFile(item, function(success)
         if success then
             filemanagerutil.openFile(self.ui, item.path or item.filepath)
+        end
+    end)
+end
+
+function RemoteLibrary:downloadFileOnly(item)
+    self:downloadRemoteFile(item, function(success)
+        if success then
+            UIManager:show(InfoMessage:new{
+                text = string.format(_("Downloaded %s"), stripCloudTag(item.text)),
+                timeout = 2,
+            })
         end
     end)
 end
